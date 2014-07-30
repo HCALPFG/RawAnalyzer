@@ -13,6 +13,9 @@ cd CMSSW_7_1_3/src/subsystem/
 
 then type:
 
-git clone git@github.com:HCALPFG/RawAnalyzer.git
+git clone https://github.com/HCALPFG/RawAnalyzer.git   just clone it
+git clone git@github.com:HCALPFG/RawAnalyzer.git   clone it with rw access
 
 that brings everything over.  Then cd into RawAnalzer and you can do scramv b and cmsRun and so on.
+
+Maintained by Drew Baden (drew@umd.edu)
