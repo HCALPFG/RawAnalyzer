@@ -37,6 +37,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <bitset>
 #include <fstream>
 #include "TH1.h"
 #include "TH2.h"
@@ -79,7 +80,6 @@ int hspigot[30];
 int wspigot[30];
 int ospigot[30];
 int spigots = 0;
-bool redirect = false;
 FILE* fout = NULL;
 uint32_t* hdata;  //here is the 16-bit HTR payload data
 uint32_t n16;     //number of 16-bit words for this HTR payload
@@ -113,9 +113,8 @@ void print_htr_qies();
 void qies_unpack(int which);
 void qies_unpack_word(uint32_t data);
 void htr_data_print();
+void htr_data_print_formatted(int spign);
 void setup_spigots(bool printout);
-bool find_nonzero_tpgs(bool printit);
-bool find_self_similar_qies(bool printit);
 bool find_htr_header_errors();
 bool check_event_numbers(int irun, int iev);
 void getFeds(int* nfeds, int*ifeds, bool printout);
@@ -215,6 +214,184 @@ void htr_fill_header() {
   	if (debugit) cout << "htr_fill_header done" << endl;
 }
 
+void htr_data_print_formatted(int spign) {
+	//
+	// first the headers
+	//
+	htr_fill_header();
+	print_htr_payload_headers(true,spign,true);
+	//
+	// next the TPs
+	//
+	tpgs_from_htr();
+	print_htr_tpgs();
+	tpgs_delete();
+	//
+	// then the QIEs
+	//
+	//
+	// next come the QIE data, time to figure out which flavor.  5=old, 6="new"
+	//
+	int nqiewords = 0;
+	cout << "QIE values:" << endl;
+	if (formatVer == 5) {
+	  cout << " Format version=5, no packing, also obsolete as of long ago (it is currently 2014 at least)" << endl;
+	}
+	else if (formatVer == 6) {
+	  cout << "Format version=6, QIE packing in blocks, depends on flavor which is found in 1st word of each block" << endl;
+	  int flavor = 0;
+	  int jpt = 8 + ntps;
+	  nqiewords = n16 - jpt - 12;  // 12 for the extra(8), pre-trailer(3), and trailer(1) 
+				// the data is packed so this is the number of words, NOT #qies!
+	  //
+	  // need to know which flavor.  peek into 1st word, it should tell us
+	  //
+	  int if1 = hdata[jpt];
+	  int ib1 = (if1>>15)&0x1;
+	  int fl1 = (if1>>12)&0x7;
+	  if (fl1 == 5) {
+	    cout << "   Flavor  Errf0/1 Capid Fib QIE ---- QIE samples, mant/range ----" << endl;
+	  }
+	  else if (fl1 == 6) {
+	    cout << "   Flavor  Errf0/1 Capid Fib QIE" << endl;
+	  }
+	  else {
+		cout << "What?  Flavor " << if1 << " is illegal, something is seriously wrong" << endl;
+		return;
+	  }
+	  if (ib1 == 0) {
+		cout << "What?  MSB is not 1, something is seriously wrong" << endl;
+		return;
+	  }
+	  for (int i=0; i<nqiewords; i++) {
+		int iword = hdata[jpt+i];
+		int bit31 = (iword>>15)&1;
+		if (bit31 == 1) {
+		    if (i>0) cout << endl;
+		    //
+		    // channel header
+		    //
+		    flavor = (iword>>12)&0x7;
+		    int errf0 = (iword>>10)&0x1;
+		    int errf1 = (iword>>11)&0x1;
+		    int capid = (iword>>8)&0x3;
+		    int channelid = iword&0xFF;
+		    int thisqie = channelid&0x3;
+		    int thisfiber = (channelid>>2)&0x7;
+		    printf("      %d        %d/%d   %d    %d   %d",flavor,errf0,errf1,capid,thisfiber,thisqie);
+		}
+		else {
+		    if (flavor == 5) {
+			int qie1 = (iword>>8)&0x7F;
+			int r1 = (qie1>>6)&0x3;
+			int m1 = qie1&0x1F;
+			int qie0 = iword&0x7F;
+			int r0 = (qie0>>6)&0x3;
+			int m0 = qie0&0x1F;
+			printf(" %2d/%d %2d/%d",m1,r1,m0,r0);
+		    }
+		    else if (flavor == 6) {
+			int qie = (iword>>8)&0x7F;
+			int r = (qie>>6)&0x3;
+			int m = qie&0x1F;
+			int capid = (iword>>8)&0x3;
+			int dv = (iword>>10)&0x1;
+			int er = (iword>>11)&0x1;
+			printf("   Qie(mant/range)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",m,r,dv,er,capid);
+		    }
+		    else cout << "FLAVOR " << flavor << " IS UNKNOWN AND CONFUSES ME TERRIBLY!!!" << endl;
+		}
+	  }
+	}
+	cout << endl;
+	//
+	// then the parity word (if 0xFFFF)
+	//
+	int jpt = 8 + ntps + nqiewords;
+	if (hdata[jpt] == 0xFFFF) {
+	  printf("Parity word 0xFFFF\n");
+	  jpt++;
+	}
+	//
+	// and then the 8 "extra" words
+	//
+	if (cm == 0) {
+	  if (us == 0) {
+		printf("CM=US=0 Normal mode data\n");
+		for (int i=0; i<8; i++) {
+		  int iword = hdata[jpt+i];
+		  printf("Extra %d: 0x%4.4X  {Empty=%d,Full=%d,LatCnt[1:0]=%d,BCNtime[11:0]=%d\n",
+		  	i+1,iword,iword>>15,iword>>14,(iword>>13)&0x3,iword&0xFFF);
+		}
+	  }
+	  else {
+	   	printf("CM=0 US=1 Unsuppressed data detected\n");
+		int iword = hdata[jpt];
+		int maskDigi8to1 = iword&0xFF;
+		int maskTP8to1 = (iword>>8)&0xFF;
+		printf("Extra 1: 0x%4.4X  Mask TP  8- 1: 0x%3.3X  Mask Digi  8- 1: 0x%3.3X\n",
+			iword,maskTP8to1,maskDigi8to1);
+		iword = hdata[jpt+1];
+		int maskDigi16to9 = iword&0xFF;
+		int maskTP16to9 = (iword>>8)&0xFF;
+		printf("Extra 2: 0x%4.4X  Mask TP 16- 9: 0x%3.3X  Mask Digi 16- 9: 0x%3.3X\n",
+			iword,maskTP16to9,maskDigi16to9);
+		iword = hdata[jpt+2];
+		int maskDigi24to17 = iword&0xFF;
+		int maskTP24to17 = (iword>>8)&0xFF;
+		printf("Extra 3: 0x%4.4X  Mask TP 24-17: 0x%3.3X  Mask Digi  24-17: 0x%3.3X\n",
+			iword,maskTP24to17,maskDigi24to17);
+		iword = hdata[jpt+3];
+		int threshDigi1 = iword&0xFF;
+		int threshDigi24 = (iword>>8)&0xFF;
+		printf("Extra 4: 0x%4.4X  Threshold Digi24: 0x%3.3X  Threshold Digi1: 0x%3.3X\n",
+			iword,threshDigi24,threshDigi1);
+		iword = hdata[jpt+4];
+		int syncFcnt1 = iword&0x3;
+		int syncFcnt2 = (iword>>2)&0x3;
+		int syncFcnt3 = (iword>>4)&0x3;
+		int syncFcnt4 = (iword>>6)&0x3;
+		int threshTP3to0 = (iword>>12)&0xF;
+		printf("Extra 5: 0x%4.4X  Threshold TP[3:0]: 0x%3.3X  Sycn Count Fibers: 4=%d 3=%d 2=%d 1=%d\n",
+			iword,threshTP3to0,syncFcnt4,syncFcnt3,syncFcnt2,syncFcnt1);
+		iword = hdata[jpt+5];
+		int syncFcnt5 = iword&0x3;
+		int syncFcnt6 = (iword>>2)&0x3;
+		int syncFcnt7 = (iword>>4)&0x3;
+		int syncFcnt8 = (iword>>6)&0x3;
+		int threshTP7to4 = (iword>>12)&0xF;
+		printf("Extra 6: 0x%4.4X  Threshold TP[7:4]: 0x%3.3X  Sycn Count Fibers: 8=%d 7=%d 6=%d 5=%d\n",
+			iword,threshTP7to4,syncFcnt8,syncFcnt7,syncFcnt6,syncFcnt5);
+		iword = hdata[jpt+6];
+		int bcnofrxbc0 = iword&0xFFF;
+		int ZSmask18to16 = (iword>>12)&0x7;
+		printf("Extra 7: 0x%4.4X  ZS_Mask[18:16]: 0x%2.2X  BCN-of-RxBC0 = %d\n",
+			iword,ZSmask18to16,bcnofrxbc0);
+		iword = hdata[jpt+7];
+		int ZSmask15to0 = iword;
+		printf("Extra 8: 0x%4.4X  ZS_Mask[15:0]: 0x%4.4X\n",iword,ZSmask15to0);
+	  }
+	}
+	else {
+		printf("CM=1 Compact mode, no extra words here\n");
+	}
+	//
+	// then 4 trailer words
+	//
+	jpt = jpt + 8;
+	printf("Pre-Trailer 3: 0x%4.4X  {DAQsamples[4:0]=%d,DAQwords[10:0]=%d}\n",
+		hdata[jpt],hdata[jpt]>>11,hdata[jpt]&0x3FF);
+        printf("Pre-Trailer 2: 0x%4.4X  {CRC}\n",hdata[jpt+1]);
+//	printf("Pre-Trailer 2: 0x%4.4X  {0000,WordCount[11:0]=%d}\n",hdata[ipt+1],hdata[ipt+1]&0xFFF);
+	printf("Pre-Trailer 1: 0x%4.4X  {all zeros}\n",hdata[jpt+2]);
+	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,00000000}\n",hdata[jpt+3],hdata[jpt+3]>>8);
+//	for (int i=0; i<4; i++) {
+//	  printf("Trailer %d: 0x%4.4X\n",i+1,hdata[ipt]);
+//	  ipt++;
+//	}
+
+}
+
 void htr_data_print() {
 	//
 	// printout in 16 bit words
@@ -236,20 +413,6 @@ void htr_data_print() {
 			hdata[6],us,cm,reserved,subV,fw);
 	printf("Header 8: 0x%4.4X   {HCALtype[7:0]=%d (is %s), Pipelength[7:0]=%d}\n",
 		hdata[7],htype,htr_types[htype],pipeline);
-	if (redirect) {
-		fprintf(fout,"Header (Ver 3, 0x59 and onwards)\n");
-		fprintf(fout,"Header 1: 0x%4.4X   {SR=%d,0000000,EVN[7:0]=0x%X}\n",hdata[0],sr,evn1);
-		fprintf(fout,"Header 2: 0x%4.4X   {EVN[23:8}=%d, full EVN=%d}\n",hdata[1],hdata[1],evn);
-		fprintf(fout,"Header 3: 0x%4.4X   {1,CT,HM,TM,FK,CE,LK,BE,CK,OD,LW,LE,RL,EE,BZ,OW}\n",hdata[2]);
-		fprintf(fout,"Header 4: 0x%4.4X   {ORN[4:0]=%d,HTRmodnumber[10:0]=%d}\n",hdata[3],orn,htrn);
-		fprintf(fout,"Header 5: 0x%4.4X   {Ver[3:0]=%d,BCN[11:0]=%d}\n",hdata[4],formatVer,bcn);
-		fprintf(fout,"Header 6: 0x%4.4X   {#TPs[7:0]=%d,#Presamples[4:0]=%d,DLL[1:0]=%d,TTCready=%d}\n",
-		hdata[5],ntps,npresamp,ndll,ttcready);
-		fprintf(fout,"Header 7: 0x%4.4X   {US=%d,CM=%d,Reserved=%d,SubV[3:0]=%d,fw[7:0]=0x%X}\n",
-			hdata[6],us,cm,reserved,subV,fw);
-		fprintf(fout,"Header 8: 0x%4.4X   {HCALtype[7:0]=%d (is %s), Pipelength[7:0]=%d}\n",
-		hdata[7],htype,htr_types[htype],pipeline);
-	}
 	int ipt = 8;
 	//
 	// next come the TPGs
@@ -259,23 +422,16 @@ void htr_data_print() {
 		printf(
 		"%3d TPG channels, %2d time samples per channel, format {SLBid[2:0],SLBch[1:0],Z,SOI,TP[8:0]}\n",
 			ntptype[htype],tpsamps);
-		if (redirect) fprintf(fout,
-		  "%3d TPG channels, %2d time samples per channel, format {SLBid[2:0],SLBch[1:0],Z,SOI,TP[8:0]}\n",
-			ntptype[htype],tpsamps);
 		int jpt = 0;
 		for (int i=0; i<(int) ntptype[htype]; i++) {
 		  printf("%2d: ",jpt+1);
-		  if (redirect) fprintf(fout,"%2d: ",jpt+1);
 		  jpt++;
 		  for (int j=0; j<tpsamps; j++) {
 		    printf("0x%4.4X={%d,%d,%d,%d,0x%3.3X} ",hdata[ipt],hdata[ipt]>>13,
 		        (hdata[ipt]>>11)&3,(hdata[ipt]>>10)&1,(hdata[ipt]>>9)&1,hdata[ipt]&0x1FF); 
-		    if (redirect) fprintf(fout,"0x%4.4X={%d,%d,%d,%d,0x%3.3X} ",hdata[ipt],hdata[ipt]>>13,
-		        (hdata[ipt]>>11)&3,(hdata[ipt]>>10)&1,(hdata[ipt]>>9)&1,hdata[ipt]&0x1FF); 
 		    ipt++;
 		  }
 		  printf("\n");
-		  if (redirect) fprintf(fout,"\n");
 		}
 	}
 	else if (format_version == 6) {
@@ -303,7 +459,6 @@ void htr_data_print() {
 			// HO is different than HBHE and HF as far as TPG go
 			//
 			printf("%3d TPG channels present, format {00000ZS0,bits[8:1]}\n",ntps);
-			if (redirect) fprintf(fout,"%3d TPG channels present, format {00000ZS0,bits[8:1]}\n",ntps);
 			int jpt = 8;
 			for (int i=0; i<ntps; i++) {
 				int tword = hdata[jpt+i];
@@ -313,14 +468,10 @@ void htr_data_print() {
 				int mbits = tword&0xFF;
 				printf("0x%4.4X={high5=0x%2.2X,z=%d,soi=%d,muon_bits=0x%2.2X}\n",
 					tword,high5,z,soi,mbits);				
-				if (redirect) fprintf(fout,"0x%4.4X={high5=0x%2.2X,z=%d,soi=%d,muon_bits=0x%2.2X}\n",
-					tword,high5,z,soi,mbits);				
 			}
 		}
 		else {
 			printf(
-			"%3d TPG channels present, format {SLBid[2:0],SLBch[1:0],Z,SOI,TP[8:0]}\n",	ntps);
-			if (redirect) fprintf(fout,
 			"%3d TPG channels present, format {SLBid[2:0],SLBch[1:0],Z,SOI,TP[8:0]}\n",	ntps);
 			int jpt = 8;
 			for (int i=0; i<ntps; i++) {
@@ -332,8 +483,6 @@ void htr_data_print() {
 				int soi = (tword>>9)&0x1;
 				int tp = (tword>>8)&0x1FF;
 				printf("0x%4.4X={slb_id=%d,slb_ch=%d,z=%d,soi=%d,tp=%d} ",
-					tword,slb_id,slb_ch,z,soi,tp);
-				if (redirect) fprintf(fout,"0x%4.4X={slb_id=%d,slb_ch=%d,z=%d,soi=%d,tp=%d} ",
 					tword,slb_id,slb_ch,z,soi,tp);
 			}
 		}
@@ -355,14 +504,8 @@ void htr_data_print() {
 		printf("%3d QIE channels, %2d time samples per channel\n ",nqiech,qiesamps);
 //		printf("format {Fiber[2:0],QIE[1:0],ER,DV,Cap[1:0],Range[1:0],Mant[4:0]}:\n");
 		printf("   fi    QIE_CH       CAPID       ER          DV     Mant/Range\n");
-		if (redirect) {
-		  fprintf(fout,"%3d QIE channels, %2d time samples per channel\n",nqiech,qiesamps);
-//		  fprintf(fout,"format {Fiber[2:0],QIE[1:0],ER,DV,Cap[1:0],Range[1:0],Mant[4:0]}:\n");
-		  fprintf(fout,"   fi    QIE_CH       CAPID       ER          DV     Mant/Range\n");
-		}
 		for (int i=0; i<nqiech; i++) {
 		  printf("%2d: ",jpt+1);
-		  if (redirect) fprintf(fout,"%2d: ",jpt+1);
 		  jpt++;
 		  int* qie_ch = new int[qiesamps];
 		  int* capids = new int[qiesamps];
@@ -392,19 +535,6 @@ void htr_data_print() {
 		  printf(" ");
 		  for (int j=0; j<qiesamps; j++) printf("%2d/%d ",mants[j],ranges[j]);
 		  printf("\n");
-		  if (redirect) {
-		    fprintf(fout,"%d ",fibs);
-		    for (int j=0; j<qiesamps; j++) fprintf(fout,"%d",qie_ch[j]);
-		    fprintf(fout," ");
-		    for (int j=0; j<qiesamps; j++) fprintf(fout,"%d",capids[j]);
-		    fprintf(fout," ");
-		    for (int j=0; j<qiesamps; j++) fprintf(fout,"%d",ers[j]);
-		    fprintf(fout," ");
-		    for (int j=0; j<qiesamps; j++) fprintf(fout,"%d",dvs[j]);
-		    fprintf(fout," ");
-		    for (int j=0; j<qiesamps; j++) fprintf(fout,"%2d/%d",mants[j],ranges[j]);
-		    fprintf(fout,"\n");
-		  }
 		}
 	}
 	else if (format_version == 6) {
@@ -430,9 +560,6 @@ void htr_data_print() {
 		    printf(
 		       "0x%4.4X Header: Flavor=%d CapIdErr=%d  LinkErr=%d  1st Capid=%d Qie=%d Fiber=%d\n",
 			iword,flavor,errf0,errf1,capid,thisqie,thisfiber);
-		    if (redirect) fprintf(fout,
-		       "0x%4.4X Header: Flavor=%d CapIdErr=%d  LinkErr=%d  1st Capid=%d Qie=%d Fiber=%d\n",
-			iword,flavor,errf0,errf1,capid,thisqie,thisfiber);
 		  }
 		  else {
 		    if (flavor == 5) {
@@ -442,9 +569,7 @@ void htr_data_print() {
 			int qie0 = iword&0x7F;
 			int r0 = (qie0>>6)&0x3;
 			int m0 = qie0&0x1F;
-			printf("0x%4.4X  Qie1(m/r)=%2d/%d  Qie0(m/r)=%2d/%d\n",iword,m1,r1,m0,r0);
-			if (redirect) fprintf(fout,"0x%4.4X  Qie1(m/r)=%2d/%d  Qie0(m/r)=%2d/%d\n",
-				iword,m1,r1,m0,r0);
+			printf("0x%4.4X  Qie1(mant/range)=%2d/%d  Qie0(mant/range)=%2d/%d\n",iword,m1,r1,m0,r0);
 		    }
 		    else if (flavor == 6) {
 			int qie = (iword>>8)&0x7F;
@@ -453,9 +578,7 @@ void htr_data_print() {
 			int capid = (iword>>8)&0x3;
 			int dv = (iword>>10)&0x1;
 			int er = (iword>>11)&0x1;
-			printf("0x%4.4X  Qie(m/r)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",iword,m,r,dv,er,capid);
-			if (redirect) fprintf(fout,
-				"0x%4.4X  Qie(m/r)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",iword,m,r,dv,er,capid);
+			printf("0x%4.4X  Qie(mant/range)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",iword,m,r,dv,er,capid);
 		    }
 		    else cout << "FLAVOR " << flavor << " IS UNKNOWN AND CONFUSES ME TERRIBLY!!!" << endl;
 		  }
@@ -467,7 +590,6 @@ void htr_data_print() {
 	int jpt = 8 + ntps + nqiewords;
 	if (hdata[jpt] == 0xFFFF) {
 	  printf("Parity word 0xFFFF\n");
-	  if (redirect) fprintf(fout,"Parity word 0xFFFF\n");
 	  jpt++;
 	}
 	//
@@ -476,46 +598,33 @@ void htr_data_print() {
 	if (cm == 0) {
 	  if (us == 0) {
 		printf("CM=US=0 Normal mode data\n");
-		if (redirect) fprintf(fout,"CM=US=0 Normal mode data\n");
 		for (int i=0; i<8; i++) {
 		  int iword = hdata[jpt+i];
 		  printf("Extra %d: 0x%4.4X  {Empty=%d,Full=%d,LatCnt[1:0]=%d,BCNtime[11:0]=%d\n",
-		  	i+1,iword,iword>>15,iword>>14,(iword>>13)&0x3,iword&0xFFF);
-		  if (redirect) fprintf(fout,
-			"Extra %d: 0x%4.4X  {Empty=%d,Full=%d,LatCnt[1:0]=%d,BCNtime[11:0]=%d\n",
 		  	i+1,iword,iword>>15,iword>>14,(iword>>13)&0x3,iword&0xFFF);
 		}
 	  }
 	  else {
 	   	printf("CM=0 US=1 Unsuppressed data detected\n");
-	   	if (redirect) fprintf(fout,"CM=0 US=1 Unsuppressed data detected\n");
 		int iword = hdata[jpt];
 		int maskDigi8to1 = iword&0xFF;
 		int maskTP8to1 = (iword>>8)&0xFF;
 		printf("Extra 1: 0x%4.4X  Mask TP  8- 1: 0x%3.3X  Mask Digi  8- 1: 0x%3.3X\n",
-			iword,maskTP8to1,maskDigi8to1);
-		if (redirect) fprintf(fout,"Extra 1: 0x%4.4X  Mask TP  8- 1: 0x%3.3X  Mask Digi  8- 1: 0x%3.3X\n",
 			iword,maskTP8to1,maskDigi8to1);
 		iword = hdata[jpt+1];
 		int maskDigi16to9 = iword&0xFF;
 		int maskTP16to9 = (iword>>8)&0xFF;
 		printf("Extra 2: 0x%4.4X  Mask TP 16- 9: 0x%3.3X  Mask Digi 16- 9: 0x%3.3X\n",
 			iword,maskTP16to9,maskDigi16to9);
-		if (redirect) fprintf(fout,"Extra 1: 0x%4.4X  Mask TP 16- 9: 0x%3.3X  Mask Digi 16- 9: 0x%3.3X\n",
-			iword,maskTP16to9,maskDigi16to9);
 		iword = hdata[jpt+2];
 		int maskDigi24to17 = iword&0xFF;
 		int maskTP24to17 = (iword>>8)&0xFF;
 		printf("Extra 3: 0x%4.4X  Mask TP 24-17: 0x%3.3X  Mask Digi  24-17: 0x%3.3X\n",
 			iword,maskTP24to17,maskDigi24to17);
-		if (redirect) fprintf(fout,"Extra 1: 0x%4.4X  Mask TP 24-17: 0x%3.3X  Mask Digi 24-17: 0x%3.3X\n",
-			iword,maskTP24to17,maskDigi24to17);
 		iword = hdata[jpt+3];
 		int threshDigi1 = iword&0xFF;
 		int threshDigi24 = (iword>>8)&0xFF;
 		printf("Extra 4: 0x%4.4X  Threshold Digi24: 0x%3.3X  Threshold Digi1: 0x%3.3X\n",
-			iword,threshDigi24,threshDigi1);
-		if (redirect) fprintf(fout,"Extra 4: 0x%4.4X  Threshold Digi24: 0x%3.3X  Threshold Digi1: 0x%3.3X\n",
 			iword,threshDigi24,threshDigi1);
 		iword = hdata[jpt+4];
 		int syncFcnt1 = iword&0x3;
@@ -525,9 +634,6 @@ void htr_data_print() {
 		int threshTP3to0 = (iword>>12)&0xF;
 		printf("Extra 5: 0x%4.4X  Threshold TP[3:0]: 0x%3.3X  Sycn Count Fibers: 4=%d 3=%d 2=%d 1=%d\n",
 			iword,threshTP3to0,syncFcnt4,syncFcnt3,syncFcnt2,syncFcnt1);
-		if (redirect) fprintf(fout,
-			"Extra 5: 0x%4.4X  Threshold TP[3:0]: 0x%3.3X  Sycn Count Fibers: 4=%d 3=%d 2=%d 1=%d\n",
-			iword,threshTP3to0,syncFcnt4,syncFcnt3,syncFcnt2,syncFcnt1);
 		iword = hdata[jpt+5];
 		int syncFcnt5 = iword&0x3;
 		int syncFcnt6 = (iword>>2)&0x3;
@@ -536,25 +642,18 @@ void htr_data_print() {
 		int threshTP7to4 = (iword>>12)&0xF;
 		printf("Extra 6: 0x%4.4X  Threshold TP[7:4]: 0x%3.3X  Sycn Count Fibers: 8=%d 7=%d 6=%d 5=%d\n",
 			iword,threshTP7to4,syncFcnt8,syncFcnt7,syncFcnt6,syncFcnt5);
-		if (redirect) fprintf(fout,
-			"Extra 6: 0x%4.4X  Threshold TP[7:4]: 0x%3.3X  Sycn Count Fibers: 8=%d 7=%d 6=%d 5=%d\n",
-			iword,threshTP7to4,syncFcnt8,syncFcnt7,syncFcnt6,syncFcnt5);
 		iword = hdata[jpt+6];
 		int bcnofrxbc0 = iword&0xFFF;
 		int ZSmask18to16 = (iword>>12)&0x7;
 		printf("Extra 7: 0x%4.4X  ZS_Mask[18:16]: 0x%2.2X  BCN-of-RxBC0 = %d\n",
 			iword,ZSmask18to16,bcnofrxbc0);
-		if (redirect) fprintf(fout,"Extra 7: 0x%4.4X  ZS_Mask[18:16]: 0x%2.2X  BCN-of-RxBC0 = %d\n",
-			iword,ZSmask18to16,bcnofrxbc0);
 		iword = hdata[jpt+7];
 		int ZSmask15to0 = iword;
 		printf("Extra 8: 0x%4.4X  ZS_Mask[15:0]: 0x%4.4X\n",iword,ZSmask15to0);
-		if (redirect) fprintf(fout,"Extra 8: 0x%4.4X  ZS_Mask[15:0]: 0x%4.4X\n",iword,ZSmask15to0);
 	  }
 	}
 	else {
 		printf("CM=1 Compact mode, no extra words here\n");
-		if (redirect) fprintf(fout,"CM=1 Compact mode, no extra words here\n");
 	}
 	//
 	// then 4 trailer words
@@ -566,17 +665,8 @@ void htr_data_print() {
 //	printf("Pre-Trailer 2: 0x%4.4X  {0000,WordCount[11:0]=%d}\n",hdata[ipt+1],hdata[ipt+1]&0xFFF);
 	printf("Pre-Trailer 1: 0x%4.4X  {all zeros}\n",hdata[jpt+2]);
 	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,00000000}\n",hdata[jpt+3],hdata[jpt+3]>>8);
-	if (redirect) {
-	  fprintf(fout,"Pre-Trailer 3: 0x%4.4X  {DAQsamples[4:0]=%d,DAQwords[10:0]=%d}\n",
-		hdata[jpt],hdata[jpt]>>11,hdata[jpt]&0x3FF);
-          fprintf(fout,"Pre-Trailer 2: 0x%4.4X  {CRC}\n",hdata[jpt+1]);
-//        fprintf(fout,"Pre-Trailer 2: 0x%4.4X  {0000,WordCount[11:0]=%d}\n",hdata[ipt+1],hdata[ipt+1]&0xFFF);
-	  fprintf(fout,"Pre-Trailer 1: 0x%4.4X  {all zeros}\n",hdata[jpt+2]);
-	  fprintf(fout,"Trailer:       0x%4.4X  {EVN[7:0]=0x%X,00000000}\n",hdata[jpt+3],hdata[jpt+3]>>8);
-	}
 //	for (int i=0; i<4; i++) {
 //	  printf("Trailer %d: 0x%4.4X\n",i+1,hdata[ipt]);
-//	  if (redirect) fprintf(fout,"Extra %d: 0x%4.4X\n",i+1,hdata[ipt]);
 //	  ipt++;
 //	}
 
@@ -643,14 +733,6 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	  for (int i=0; i<nerror; i++) cout << err_types[ierror[i]] << " ";
 	}
 //	printf(" %d",isone);
-	if (redirect) {
-	  fprintf(fout,"   %2d    %4d   %5d  %4d  0x%2.2X   %2d     0x%2.2x   %2d   %2d  %3d   ",
-	    spigot,evn,bcn,htrn,fw,ntps,htype,tpsamps,qiesamps,ndccw);
-	  fprintf(fout," %d%d%d%d%d%d%d%d%d%d%d%d%d%d%d",
-		ct,hm,tmb,odfe,odce,odle,be,ck,od,lw,le,rl,ee,bz,ow);
-	  fprintf(fout,"  %2d %2d",ttcready,dll);
-//	  fprintf(fout," %d",isone);
-	}
 	if (evn2 == evn1) cout << endl;
 	else cout << " ***" << endl;
 	//
@@ -672,23 +754,6 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 		if (tmb)  printf("\033[1m TM bit set: Must be in pattern mode\033[m\n");
 		if (ct)   printf("\033[1m CT bit set: Must be in calibration mode\033[m\n");
 		if (!isone) printf("\033[1m Error in header!!!  Payload word 3 should have MSB=1\033[m\n");		
-	     if (redirect) {
-		if (ow) fprintf(fout,"\033[1m OW bit set: Overflow warning!\033[m\n");
-		if (bz) fprintf(fout,"\033[1m BZ bit set: Internal buffers busy (fast report)\033[m\n");
-		if (ee) fprintf(fout,"\033[1m EE bit set: Empty event!\033[m\n");
-		if (rl) fprintf(fout,"\033[1m RL bit set: Previous L1A rejected!\033[m\n");
-		if (le) fprintf(fout,"\033[1m LE bit set: Latency error detected!\033[m\n");
-		if (lw) fprintf(fout,"\033[1m LW bit set: Latency warning!\033[m\n");
-		if (od) {
-		        fprintf(fout,"\033[1m OD bit set: Optical Data error detected!\033[m");
-		        fprintf(fout,"\033[1m   (could be turned on by orbit gap stuff)\033[m\n");
-		}
-		if (ck)   fprintf(fout,"\033[1m CK bit set: Clock problems, TTC or DLL\033[m\n");
-		if (be)   fprintf(fout,"\033[1m BE bit set: Bunch error, internal to HTR counter\033[m\n");
-		if (tmb)  fprintf(fout,"\033[1m TM bit set: Must be in pattern mode\033[m\n");
-		if (ct)   fprintf(fout,"\033[1m CT bit set: Must be in calibration mode\033[m\n");
-		if (!isone) fprintf(fout,"\033[1m Error in header!!!  Payload word 3 should have MSB=1\033[m\n");		
-	     }
 	}
 }
 
@@ -697,7 +762,10 @@ void tpgs_from_htr() {
 	// collect all of the TPs into arrays
 	//
 	tpgs = new uint32_t [ntps];
-	for (int j=0; j<ntps; j++) tpgs[j] = hdata[j+8];
+	for (int j=0; j<ntps; j++) {
+		tpgs[j] = hdata[j+8];
+		if (debugit) cout << hex << j << " 0x" << tpgs[j] << endl;
+	}
 
 }
 
@@ -746,57 +814,77 @@ void print_htr_qies() {
 	int nqiech = nqies/qiesamps;
 	printf("There are %d QIE channels present, %d time samples per channel.  mant/range values: \n",
 	 	nqiech,qiesamps);
-	if (redirect) fprintf(fout,"There are %d QIE channels present, %d time samples per channel.  mant/range values: \n",
-		nqiech,qiesamps);
 	int ipt = 0;
 	for (int i=0; i<nqiech; i++) {
 	  printf("%3d: ",i+1);
-	  if (redirect) fprintf(fout,"%3d: ",i+1);
 	  for (int j=0; j<qiesamps; j++) {
 	    if (debugit) cout << "qies_unpack...";
 	    qies_unpack(ipt++);
 	    if (debugit) cout << "done" << endl;
 	    printf("%2d/%d ",mant,range);
-	    if (redirect) fprintf(fout,"%2d/%d ",mant,range);
 	  }
 	  printf("\n");
-	  if (redirect) fprintf(fout,"\n");
 	}	
 
 }
 
 void print_htr_tpgs() {
-	//
-	// format this dump 1 line per channel, using number of time samples
-	// note: NO ZERO SUPPRESSION!!!!
-	//
-	uint32_t jptr = 0;
-	printf("\n Ch  (Z means 0x0 sent to RCT,  * means SOI)\n");
-	for (uint32_t j=0; j<ntptype[htype]; j++) {
-	  printf("%3d ",j+1);
-	  for (int k=0; k<tpsamps; k++) {
-//		    uint32_t tp_tag = (tpgs[jptr] >> 11) & 0x1F;
-//		    uint32_t slb_id = tp_tag >> 2;
-//		    uint32_t slb_ch = tp_tag & 0x3;
-	    uint32_t tp_z = (tpgs[jptr] >> 10) & 0x1;
-	    uint32_t tp_soi = (tpgs[jptr] >> 9) & 0x1;
-	    uint32_t tp_data = (tpgs[jptr] & 0x1FF);
-	    if (tp_z == 1) printf("Z");
-	    else printf(" ");
-	    printf("0x%3.3X",tp_data);
-	    if (tp_soi == 1) printf("* ");
-	    else printf("  ");
-	    if (redirect) {
-	      if (tp_z == 1) fprintf(fout,"Z");
-	      else fprintf(fout," ");
-	      fprintf(fout,"0x%3.3X",tp_data);
-	      if (tp_soi == 1) fprintf(fout,"* ");
-	      else fprintf(fout,"  ");
-	    }
-	    jptr++;
-	  }
-	  printf("\n");
-	  if (redirect) fprintf(fout,"\n");
+	cout << "TPs are next: " << endl;
+	if (htype == 0) {
+		//
+		// HO is different than HBHE and HF as far as TPG go
+		//
+		//
+		// first get the NumSamples
+		//
+		int ntpsamp = 0;
+		for (int i=0; i<ntps; i++) {
+			int tword = tpgs[i];
+			cout << "0x" << hex << tword << dec << endl;
+			int high5 = (tword>>11)&0x1F;
+			if (high5 == 0) ntpsamp++; // should be the same number for all 3 TPs (each one is a different set of 8 muon bits)
+		}
+		cout << "  This is HO - TPs are very different, and not all that well used so caveat emptor holds." << endl;
+		cout << "  I see " << ntps << " TP words here and " << ntpsamp << " samples for each muon bit:" << endl;
+		printf("   =Muon bits:222221111111111         \n");
+		printf("   Sample SOI 432109876543210987654321\n");
+		for (int i=0; i<ntpsamp; i++) {
+			int t1 = tpgs[i];		// 1-8
+			int t2 = tpgs[i+4];		// 9-16
+			int t3 = tpgs[i+8];		// 17-24
+			int soi1 = (t1>>9)&0x1;  // should be the same for all 3 words
+			int soi2 = (t2>>9)&0x1;  // should be the same for all 3 words
+			int soi3 = (t3>>9)&0x1;  // should be the same for all 3 words
+			int t18 = t1&0xFF;
+			int t28 = t2&0xFF;
+			int t38 = t3&0xFF;
+			if ( (soi1 != soi2) || (soi1 != soi3) || (soi2 != soi3) ) cout << "Problem!!! SOIs do not agree on TP " << i << endl;
+			cout << "      " << i << "    " << soi1 << "  " << 
+				(bitset<8>) t38 << (bitset<8>) t28 << (bitset<8>) t18 << endl;
+		}
+		cout << "  SOI is the 'sample of interest', 1 corresponds to BX of the L1A." << endl;
+		cout << "  There are 24 HO channles per HTR and so 24 possible muon bits could be set, see above." << endl;
+	}
+	else {
+		//
+		// HBHE or HF, standard TPs
+		//
+		cout << "  This is " << ntptype[htype] << " with " << ntps << " trigger primitives" << endl;
+		cout << "	 SLB  SLB" << endl;
+		cout << "         ID   CH   Z   SOI   TP" << endl;
+		for (int i=0; i<ntps; i++) {
+			int tword = tpgs[i];
+			int tp_tag = (tword>>11)&0x1F;
+			int slb_id = (tp_tag >> 2)&0x7;
+			int slb_ch = tp_tag & 0x3;
+			int z = (tword>>10)&0x1;
+			int soi = (tword>>9)&0x1;
+			int tp = (tword>>8)&0x1FF;
+			printf("          %d    %d   %d    %d  0x%2X\n",slb_id,slb_ch,z,soi,tp);
+		}
+		cout << "  SLB ID = 1-6 specifies which SLB" << endl;
+		cout << "  SLB CH = 0-3 means A0,A1,C0,C1 for TOP FPGA and B0,B1,D0,D1 for BOT FPGA" << endl;
+		cout << "  TP is the 9-bit number that gets sent to RCT" << endl;
 	}
 }
 
@@ -838,130 +926,7 @@ bool find_htr_header_errors() {
 	return false;
 }
 
-bool find_nonzero_tpgs(bool printit) {
 
-	    bool global = false;
-
-	    for (int i=fed1; i<fed2; i++) {
-	      const FEDRawData& data = rawdata->FEDData(i);
-	      size=data.size();
-              FEDHeader header(data.data());
-	      FEDTrailer trailer(data.data()+size-8);
-	      payload=(uint32_t*)(data.data());
-	      //
-	      // setup for all the spigots
-	      //
-//	      cout << "spigots " << spigots << endl;
-	      if (printit) cout << "FED " << i << endl;
-	      setup_spigots(false);
-	      if (printit) cout << "spigots " << spigots << endl;
-	      //
-	      // loop over spigots
-	      //
-	      for (int j=0; j<spigots; j++) {
-	        if (printit) cout << "  Spigot " << j << endl;
-	        htr_data_from_payload(payload,j);
-		htr_fill_header();
-		tpgs_from_htr();
-//		print_htr_tpgs();
-		//
-		// find nonzero tpgs
-		//
-		int jptr = 0;
-		int kptr = 0;
-//		cout << "looping over TPs for spigot " << j << ", number TPs ntptype[ " << 
-//		   htype << "]=" << ntptype[htype] << " tpsamps= " << tpsamps << endl;
-		for (int k=0; k<(int) ntptype[htype]; k++) {
-		  bool foundit = false;
-		  kptr = jptr;
-		  for (int l=0; l<tpsamps; l++) {
-		    int tpdata = tpgs[jptr] & 0x1FF;
-		    if (tpdata > 0) foundit = true;
-		    jptr++;
-		  }
-		  if (foundit) {
-		    global = true;
-		    cout << "Nonzero TPG FED " << i << " spigot " << j;
-		    if (printit) {
-		      jptr = kptr;
-		      for (int l=0; l<tpsamps; l++) {
-		        int tpdata = tpgs[jptr] & 0x1FF;
-		        int soi = (tpgs[jptr]>>9) & 0x1;
-		        if (tpdata > 0) cout << "    TP=" << k << " TS=" << l << " TPG=0x" <<
-		           tpdata << " SOI=" << soi << endl;
-		        jptr++;
-		      }
-		    }
-		  }
-		}
-	      }
-	      cout << endl;
-	    }
-	    return global;
-}
-
-bool find_self_similar_qies(bool printit) {
-	//
-	// loop over all FEDs
-	//
-	bool global = false;
-	for (int i=fed1; i<fed2; i++) {
-	      const FEDRawData& data = rawdata->FEDData(i);
-	      size=data.size();
-              FEDHeader header(data.data());
-	      FEDTrailer trailer(data.data()+size-8);
-	      payload=(uint32_t*)(data.data());
-	      //
-	      // setup for all the spigots
-	      //
-//	      cout << "spigots " << spigots << endl;
-	      if (printit) cout << "FED " << i << endl;
-	      setup_spigots(false);
-	      if (printit) cout << "spigots " << spigots << endl;
-	      //
-	      // loop over spigots
-	      //
-	      for (int j=0; j<spigots; j++) {
-	        if (printit) cout << "  Spigot " << j << endl;
-	        htr_data_from_payload(payload,j);
-		htr_fill_header();
-		tpgs_from_htr();
-//		print_htr_tpgs();
-		//
-		// find nonzero tpgs
-		//
-		int jptr = 0;
-		int kptr = 0;
-//		cout << "looping over TPs for spigot " << j << ", number TPs ntptype[ " << 
-//		   htype << "]=" << ntptype[htype] << " tpsamps= " << tpsamps << endl;
-		for (int k=0; k<(int) ntptype[htype]; k++) {
-		  bool foundit = false;
-		  kptr = jptr;
-		  for (int l=0; l<tpsamps; l++) {
-		    int tpdata = tpgs[jptr] & 0x1FF;
-		    if (tpdata > 0) foundit = true;
-		    jptr++;
-		  }
-		  if (foundit) {
-		    global = true;
-		    cout << "Nonzero TPG FED " << i << " spigot " << j;
-		    if (printit) {
-		      jptr = kptr;
-		      for (int l=0; l<tpsamps; l++) {
-		        int tpdata = tpgs[jptr] & 0x1FF;
-		        int soi = (tpgs[jptr]>>9) & 0x1;
-		        if (tpdata > 0) cout << "    TP=" << k << " TS=" << l << " TPG=0x" <<
-		           tpdata << " SOI=" << soi << endl;
-		        jptr++;
-		      }
-		    }
-		  }
-		}
-	      }
-	      cout << endl;
-	    }
-	    return global;
-}
 
 void getFeds(int* nfeds, int* ifeds, bool printout) {
 	int kfeds = 0;
@@ -1249,16 +1214,13 @@ bool check_htr_header_errors(int irun,int iev) {
 //
 // constructors and destructor
 //
-RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig)
-
-{
+RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig) {
    //now do what ever initialization is needed
 
 }
 
 
-RawAnalyzer::~RawAnalyzer()
-{
+RawAnalyzer::~RawAnalyzer() {
  
    // do anything here that needs to be done at desctruction time
    // (e.g. close files, deallocate resources etc.)
@@ -1290,24 +1252,13 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
        searching = false;
      }
      else if (criteria == 1) {
-       if (!find_nonzero_tpgs(false)) return;
-       searching = false;
-     }
-     else if (criteria == 2) {
-       //
-       // search for QIEs that have the same value for all (or most) TS
-       //
-       if (!find_self_similar_qies(true)) return;
-       searching = false;
-     }
-     else if (criteria == 3) {
        //
        // stop on events where there are any errors in the HTR header
        //
        if (!find_htr_header_errors()) return;
        searching = false;
      }
-     else if (criteria == 4) {
+     else if (criteria == 2) {
        //
        // cycle through and printout stuff about ORN, BCN, EVN, BCN idle, etc
        //
@@ -1318,7 +1269,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
       printbegin = true;
       searching = false;
      }
-     else if (criteria == 5) {
+     else if (criteria == 3) {
 	//
 	// report any HTR that has any errors set in it's header.  This will produce a lot of output!
 	//
@@ -1350,7 +1301,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 //
 //   Handle<FEDRawDataCollection> rawdata;
    nFEDs = 0;
-   cout << "+++++++++ Looking for FEDs ++++++++++++++" << endl;
+//   cout << "+++++++++ Looking for FEDs ++++++++++++++" << endl;
 //   for (int i = 700; i<FEDNumbering::lastFEDId(); i++) {
    for (int i = 700; i<732; i++) {
 	const FEDRawData& data = rawdata->FEDData(i);
@@ -1371,17 +1322,12 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	  cout << "===========================================" << endl;
 	  cout << "  0  Next (^C then 0 to quit)              ";
 	  cout << "  1  Select FED and report header info     " << endl;
-	  if (redirect)
-	  cout << "  2  Close output file, direct ONLY to term";
-	  else
-	  cout << "  2  Direct output to term AND file        ";
-	  cout << "  3  Find event number and stop            " << endl;
-	  cout << "  4  DCC hex dump (unformatted)            ";
-	  cout << "  5  DCC Event header HTR info             " << endl;
-	  cout << "  6  All HTR payload headers               ";
-	  cout << "  7  HTR payload (formatted)               " << endl;
-	  cout << "  8  HTR payload (unformatted)             ";
-	  cout << "  9  Search for anomalies (there are many) " << endl;
+	  cout << "  2  Find event number and stop            ";
+	  cout << "  3  DCC hex dump (unformatted)            " << endl;
+	  cout << "  4  All HTR payload headers               ";
+	  cout << "  5  HTR payload (formatted)               " << endl;
+	  cout << "  6  HTR payload (unformatted)             ";
+	  cout << "  7  Search for anomalies (there are many) " << endl;
 	  cout << "What is your pleasure?> ";
 	  int iw;
 	  scanf("%d",&iw);
@@ -1455,35 +1401,13 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	     }
 	  }
 	  else if (iw == 2) {
-	    bool temp;
-	    if (redirect) {
-	      //
-	      // close file
-	      //
-	      fclose(fout);
-	      temp = false;
-	    }
-	    else {
-	      //
-	      // open file
-	      //
-	      cout << "Filename: (will overwrite any existing file) ";
-	      char fname[128];
-	      cin >> fname;
-	      fout = fopen(fname,"w");
-	      cout << endl;
-	      temp = true;
-	    }
-	    redirect = temp;
-	  }
-	  else if (iw == 3) {
 	    searching = true;
 	    criteria = 0;
 	    cout << "Event number: ";
 	    scanf("%d",&find_evn);
 	    return;
 	  }
-	  else if (iw == 4) {
+	  else if (iw == 3) {
 	    //
 	    // unformatted hex dump of the entire DCC payload (all spigots)
 	    //
@@ -1493,48 +1417,21 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		    for (int i=0; i<ndcc32; i++) {
 			if (i == 0) {
 			    printf("DCC Header:\n");
-			    if (redirect) fprintf(fout,"DCC Header:\n");
 			}
 			else if (i == 6) {
 			    printf("HTR payload summaries:\n");
-			    if (redirect) fprintf(fout,"HTR payload summaries:\n");
 			}
 			for (int j=0; j<spigots; j++) if (i == ospigot[j]) { 
 			    printf("HTR payload %d:\n",j+1);
-			    if (redirect) fprintf(fout,"HTR payload %d:\n",j+1);
 			}
 			printf("  %4d 0x%8.8X\n",i,payload[i]);
-			if (redirect) fprintf(fout,"  %4d 0x%8.8X\n",i,payload[i]);
 		    }
 	    }
 	    else {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 5) {
-	    //
-	    // dump out the header information for this event
-	    //
-	    if (isFEDopen) {
-	        cout << " There are " << spigots << " spigots" << endl;
-	        cout << "  Spigot  #DCCWords  HTRerr  LRBerr  E-P-B-V-T " << endl;
-		for (int i=0; i<spigots; i++) {
-	          uint32_t s = hspigot[i];
-	          int nwords,htrerr,lrberr,ee,ep,eb,ev,et;
-	          payload_return(s,&nwords,&htrerr,&lrberr,&ee,&ep,&eb,&ev,&et);
-	          if (nwords > 0) {
-		    printf("  %4d       %5d    0x%2.2x    0x%2.2x   %d-%d-%d-%d-%d\n",
-	       	       i,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
-		    if (redirect) fprintf(fout,"  %4d       %5d    0x%2.2x    0x%2.2x   %d-%d-%d-%d-%d\n",
-	       	       i,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
-		  }
-	        }
-	    }
-	    else {
-		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
-	    }
-	  }
-	  else if (iw == 6) {
+	  else if (iw == 4) {
 	    //
 	    // formatted dump of the headers for all HTRs (spigots)
 	    //
@@ -1611,7 +1508,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 7) {
+	  else if (iw == 5) {
 	    //
 	    // dump payload for this spigot, but prompt for which one first
 	    //
@@ -1622,63 +1519,21 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		//
 		// extract the data for this spigot
 		//
-		if (debugit) cout << "htr_data_from_payload...";
 		htr_data_from_payload(payload,spign);
-		if (debugit) cout << "done" << endl;
 		//
-		// printout the header info
+		// printout in unformatted (or close to it anyway)
 		//
-		if (debugit) cout << "printing htr payload headers...";
-		print_htr_payload_headers(true,spign,true);
-		if (debugit) cout << "done" << endl;
-		//
-		// extract the TPGs
-		//
-		if (debugit) cout << "tpgs_from_htr...";
-		tpgs_from_htr();
-		if (debugit) cout << "done" << endl;
-		//
-		// printout the TPs
-		//
-		if (debugit) cout << "print_htr_tpgs...";
-		print_htr_tpgs();
-		if (debugit) cout << "done" << endl;
-		//
-		// now delete the tpgs
-		//
-		if (debugit) cout << "tpgs_delete...";
-		tpgs_delete();
-		if (debugit) cout << "done" << endl;
-		//
-		// now look at the raw data
-		//
-		if (debugit) cout << "qies_from_htr...";
-		qies_from_htr();
-		if (debugit) cout << "done" << endl;
-		//
-		// now do a formatted dump
-		//
-		if (debugit) cout << "print_htr_qies...";
-		print_htr_qies();
-		if (debugit) cout << "done" << endl;
-		//
-		// now delete the qies
-		//
-		if (debugit) cout << "qies_delete...";
-		qies_delete();
-		if (debugit) cout << "done" << endl;
+		htr_data_print_formatted(spign);
 		//
 		// and delete the entire payload for this HTR
 		//
-		if (debugit) cout << "htr_data_delete...";
 		htr_data_delete();
-		if (debugit) cout << "done" << endl;
 	    }
 	    else {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 8) {
+	  else if (iw == 6) {
 	    //
 	    // dump payload for this spigot, but prompt for which one first
 	    //
@@ -1703,27 +1558,25 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 9) {
+	  else if (iw == 7) {
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
-	    cout << "  1  Search for non-zero TPG" << endl;
-	    cout << "  2  Search for self-similar QIEs" << endl;
-	    cout << "  3  Search for event with error(s) in HTR header" << endl;
-	    cout << "  4  Printout BCN, ORN, Evn, BCNidle, etc" << endl;
-	    cout << "  5  Report on any HTR that has any error bits set in the header" << endl;
+	    cout << "  1  Search for event with error(s) in HTR header" << endl;
+	    cout << "  2  Printout BCN, ORN, Evn, BCNidle, etc" << endl;
+	    cout << "  3  Report on any HTR that has any error bits set in the header" << endl;
 	    cout << "What is your pleasure?> ";
 	    scanf("%d",&criteria);
-	    if (criteria > 0 && criteria < 6) {
+	    if (criteria > 0 && criteria < 4) {
 	      searching = true;
 	      printbegin = false;
-	      if (criteria == 4) {
+	      if (criteria == 2) {
 		int iw;
 		cout << "But not 12 and 13? (1=right, 0=use both): ";
 		cin >> iw;
 		if (iw == 0) not12_13 = false;
 		else not12_13 = true;
 	      }
-	      else if (criteria == 5) {
+	      else if (criteria == 3) {
 		cout << "How many events to loop over? :";
 		cin >> nloopse;
 		ncountse = 0;
@@ -1739,10 +1592,14 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 
 
 // ------------ method called once each job just before starting event loop  ------------
-void 
-RawAnalyzer::beginJob()
-{
-  cout << "In the beginning....." << endl;
+void RawAnalyzer::beginJob() {
+  cout << "******************************************************************************************************************" << endl;
+  cout << "* This is a sort of expert system for looking at raw HCAL data.   Much of it assumes an understanding of what's  *" << endl;
+  cout << "* in that data.  To do that, you will need to pay attention to 2 documents, both of which might be evolving.     *" << endl;
+  cout << "* Tullio's HTR documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/HTR/design/HTR_MainFPGA.pdf *" << endl;
+  cout << "* Eric's DCC documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/DCC/FormatGuide.pdf           *" << endl; 
+  cout << "* Best of luck.   (Drew Baden, drew@umd.edu, July 2014)                                                          *" << endl;
+  cout << "******************************************************************************************************************" << endl;
 }
 
 // ------------ method called once each job just after ending the event loop  ------------
