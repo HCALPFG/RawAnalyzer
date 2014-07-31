@@ -63,9 +63,11 @@ char ESC=27;
 //
 // HTR types, starting from 0:  HO,HBHE1+,HBHE2+,HBHE3+,HBHE4+,HBHE5+,HBHE6+,HBHE7+,
 //                              HF,HBHE1-,HBHE2-,HBHE3-,HBHE4-,HBHE5-,HBHE6-,HBHE7-
-const uint32_t ntptype[16] = {0,24,16,16,16,16,16,16,2,24,16,16,16,16,16,16};
-const char* htr_types[16] = {"HO","HBHE1+","HBHE2+","HBHE3+","HBHE4+","HBHE5+","HBHE6+","HBHE7+",
-                        "HF","HBHE1-","HBHE2-","HBHE3-","HBHE4-","HBHE5-","HBHE6-","HBHE7-"};
+const uint32_t ntptype[19] = {0,24,16,16,16,16,16,16,2,24,16,16,16,16,16,16,0,0,0};
+const char* htr_types[19] = {"HO    ","HBHE1+","HBHE2+","HBHE3+","HBHE4+","HBHE5+","HBHE6+","HBHE7+",
+                             "HF    ","HBHE1-","HBHE2-","HBHE3-","HBHE4-","HBHE5-","HBHE6-","HBHE7-",
+			     "CALIB ","DEBUG ","ZDC   "};
+const uint32_t nslbtype[19] = {0,6,4,4,4,4,4,4,1,6,4,4,4,4,4,4,0,0,0}; // ntptype/4
 const char* err_types[15] = {"CT","HM","TM","FK","CE","LK","BE","CK","OD","LW","FE","RL","EE","BZ","OW"};
 bool searching = false;
 bool isFEDopen = false;
@@ -196,10 +198,11 @@ void htr_fill_header() {
 	subV = (hdata[6]>>12)&0xF;
 	fw = hdata[6] & 0xFF;
 	htype = (hdata[7]>>8) & 0xFF;
+//	if (htype > 15) cout << "  HTYPE is " << htype << " which is a surprise and probably an error!!!!" << endl;
+//	else cout << "  This payload appears to be from the " << ntptype[htype]	<< " subdetector...." << endl;
 	pipeline = hdata[7]&0xFF;
-//	if (htype > 15) cout << "+++++++++ hcalType is " << htype << " illegal!!!!" << endl;
 	if (debugit) cout << "htype " << htype;
-	if (htype == 0) {
+	if ( (htype == 0) || (htype > 15) ) {
 	  tpsamps = 0;
 	}
 	else {
@@ -235,7 +238,7 @@ void htr_data_print_formatted(int spign) {
 	int nqiewords = 0;
 	cout << "QIE values:" << endl;
 	if (formatVer == 5) {
-	  cout << " Format version=5, no packing, also obsolete as of long ago (it is currently 2014 at least)" << endl;
+	  cout << "    Format version=5, no packing, also obsolete as of long ago (it is currently 2014 at least)" << endl;
 	}
 	else if (formatVer == 6) {
 	  cout << "Format version=6, QIE packing in blocks, depends on flavor which is found in 1st word of each block" << endl;
@@ -263,6 +266,12 @@ void htr_data_print_formatted(int spign) {
 		cout << "What?  MSB is not 1, something is seriously wrong" << endl;
 		return;
 	  }
+	  bool errf0OK = true;
+	  bool errf1OK = true;
+	  bool capidOK = true;
+	  bool allfibers = true;
+	  int capid1 = -1;
+	  int fib1 = -1;
 	  for (int i=0; i<nqiewords; i++) {
 		int iword = hdata[jpt+i];
 		int bit31 = (iword>>15)&1;
@@ -279,6 +288,20 @@ void htr_data_print_formatted(int spign) {
 		    int thisqie = channelid&0x3;
 		    int thisfiber = (channelid>>2)&0x7;
 		    printf("      %d        %d/%d   %d    %d   %d",flavor,errf0,errf1,capid,thisfiber,thisqie);
+		    //
+		    // perform some basic checks
+		    //
+		    if (errf0 == 1) errf0OK = false;
+		    if (errf1 == 1) errf1OK = false;
+		    // check that all CAPIDs are the same (they should be)
+		    if (i == 0) capid1 = capid;
+		    else {
+			if (capid != capid1) capidOK = false;
+			capid1 = capid;
+		    }
+		    // check if all fibers are there, assume incrementing
+		    if ( (thisqie == 0) && (thisfiber != (fib1+1)) ) allfibers = false;
+		    fib1 = thisfiber;
 		}
 		else {
 		    if (flavor == 5) {
@@ -302,94 +325,117 @@ void htr_data_print_formatted(int spign) {
 		    else cout << "FLAVOR " << flavor << " IS UNKNOWN AND CONFUSES ME TERRIBLY!!!" << endl;
 		}
 	  }
+	  //
+	  // report on the consistency checks (always done for the flavor header)
+	  //
+	  cout << endl << "  ===> Error checking...";
+	  if (errf0OK) cout << "no CAPID errors...";
+	  else cout << "CAPID ERRORS!!!! (errf0)...";
+	  if (errf1OK) cout << "no LINK errors...";
+	  else cout << "LINK ERRORS!!!! (errf1)...";
+	  if (capidOK) cout << "all CAPIDs match...";
+	  else cout << "CAPID mismatch!!!...";
+	  if (allfibers) cout << "all fibers present" << endl;
+	  else cout << "NOT all fibers present!!!!" << endl;
 	}
-	cout << endl;
 	//
 	// then the parity word (if 0xFFFF)
 	//
 	int jpt = 8 + ntps + nqiewords;
 	if (hdata[jpt] == 0xFFFF) {
-	  printf("Parity word 0xFFFF\n");
+	  printf("Parity word 0xFFFF detected (put in to make an even number of payload words sent to the DAQ)\n");
 	  jpt++;
 	}
 	//
 	// and then the 8 "extra" words
 	//
+	cout << "Next come 8 'Extra-info' words" << endl;
 	if (cm == 0) {
 	  if (us == 0) {
-		printf("CM=US=0 Normal mode data\n");
+		printf("   CM=US=0 Normal mode data\n");
+		printf("   Fiber Empty Full Count    BCN idle\n");
+		bool bcnidleOK = true;
+		int bcn1 = -1;
 		for (int i=0; i<8; i++) {
 		  int iword = hdata[jpt+i];
-		  printf("Extra %d: 0x%4.4X  {Empty=%d,Full=%d,LatCnt[1:0]=%d,BCNtime[11:0]=%d\n",
-		  	i+1,iword,iword>>15,iword>>14,(iword>>13)&0x3,iword&0xFFF);
+		  int empty = (iword>>15)&1;
+		  int full = (iword>>14)&1;
+		  int latcnt = (iword>>12)&0x3;
+		  int bcnidle = iword&0xFFF;
+		  printf("      %d    %d     %d     %d   %d (0x%X)\n",i+1,empty,full,latcnt,bcnidle,bcnidle);
+		  if (i == 0) bcn1 = bcnidle;
+		  else {
+		    if (bcnidle != bcn1) bcnidleOK = false;
+		    bcn1 = bcnidle;
+		  }
 		}
+		if (bcnidleOK) cout << "  ===> All BCN idle counters match..." << endl;
+		else cout << "  ===> Problem with BCN idles - at least one of them does not match!!!!" << endl;
 	  }
 	  else {
-	   	printf("CM=0 US=1 Unsuppressed data detected\n");
+	   	printf("   CM=0 US=1 Unsuppressed data detected\n");
+		// 1
 		int iword = hdata[jpt];
 		int maskDigi8to1 = iword&0xFF;
 		int maskTP8to1 = (iword>>8)&0xFF;
-		printf("Extra 1: 0x%4.4X  Mask TP  8- 1: 0x%3.3X  Mask Digi  8- 1: 0x%3.3X\n",
-			iword,maskTP8to1,maskDigi8to1);
+		printf("   Mask TP  8- 1: 0x%3.3X  Mask Digi  8- 1: 0x%3.3X\n",maskTP8to1,maskDigi8to1);
+		// 2
 		iword = hdata[jpt+1];
 		int maskDigi16to9 = iword&0xFF;
 		int maskTP16to9 = (iword>>8)&0xFF;
-		printf("Extra 2: 0x%4.4X  Mask TP 16- 9: 0x%3.3X  Mask Digi 16- 9: 0x%3.3X\n",
-			iword,maskTP16to9,maskDigi16to9);
+		printf("   Mask TP 16- 9: 0x%3.3X  Mask Digi 16- 9: 0x%3.3X\n",maskTP16to9,maskDigi16to9);
+		// 3
 		iword = hdata[jpt+2];
 		int maskDigi24to17 = iword&0xFF;
 		int maskTP24to17 = (iword>>8)&0xFF;
-		printf("Extra 3: 0x%4.4X  Mask TP 24-17: 0x%3.3X  Mask Digi  24-17: 0x%3.3X\n",
-			iword,maskTP24to17,maskDigi24to17);
+		printf("   Mask TP 24-17: 0x%3.3X  Mask Digi  24-17: 0x%3.3X\n",maskTP24to17,maskDigi24to17);
+		// 4
 		iword = hdata[jpt+3];
 		int threshDigi1 = iword&0xFF;
 		int threshDigi24 = (iword>>8)&0xFF;
-		printf("Extra 4: 0x%4.4X  Threshold Digi24: 0x%3.3X  Threshold Digi1: 0x%3.3X\n",
-			iword,threshDigi24,threshDigi1);
+		printf("   Threshold Digi24: 0x%3.3X  Threshold Digi1: 0x%3.3X\n",threshDigi24,threshDigi1);
+		// 5
 		iword = hdata[jpt+4];
 		int syncFcnt1 = iword&0x3;
 		int syncFcnt2 = (iword>>2)&0x3;
 		int syncFcnt3 = (iword>>4)&0x3;
 		int syncFcnt4 = (iword>>6)&0x3;
 		int threshTP3to0 = (iword>>12)&0xF;
-		printf("Extra 5: 0x%4.4X  Threshold TP[3:0]: 0x%3.3X  Sycn Count Fibers: 4=%d 3=%d 2=%d 1=%d\n",
-			iword,threshTP3to0,syncFcnt4,syncFcnt3,syncFcnt2,syncFcnt1);
+		printf("   Threshold TP[3:0]: 0x%3.3X  Sycn Count Fibers: 4=%d 3=%d 2=%d 1=%d\n",
+			threshTP3to0,syncFcnt4,syncFcnt3,syncFcnt2,syncFcnt1);
+		// 6
 		iword = hdata[jpt+5];
 		int syncFcnt5 = iword&0x3;
 		int syncFcnt6 = (iword>>2)&0x3;
 		int syncFcnt7 = (iword>>4)&0x3;
 		int syncFcnt8 = (iword>>6)&0x3;
 		int threshTP7to4 = (iword>>12)&0xF;
-		printf("Extra 6: 0x%4.4X  Threshold TP[7:4]: 0x%3.3X  Sycn Count Fibers: 8=%d 7=%d 6=%d 5=%d\n",
-			iword,threshTP7to4,syncFcnt8,syncFcnt7,syncFcnt6,syncFcnt5);
+		printf("   Threshold TP[7:4]: 0x%3.3X  Sycn Count Fibers: 8=%d 7=%d 6=%d 5=%d\n",
+			threshTP7to4,syncFcnt8,syncFcnt7,syncFcnt6,syncFcnt5);
+		// 7
 		iword = hdata[jpt+6];
 		int bcnofrxbc0 = iword&0xFFF;
 		int ZSmask18to16 = (iword>>12)&0x7;
-		printf("Extra 7: 0x%4.4X  ZS_Mask[18:16]: 0x%2.2X  BCN-of-RxBC0 = %d\n",
-			iword,ZSmask18to16,bcnofrxbc0);
+		printf("   ZS_Mask[18:16]: 0x%2.2X  BCN-of-RxBC0 = %d\n",ZSmask18to16,bcnofrxbc0);
+		// 8
 		iword = hdata[jpt+7];
 		int ZSmask15to0 = iword;
-		printf("Extra 8: 0x%4.4X  ZS_Mask[15:0]: 0x%4.4X\n",iword,ZSmask15to0);
+		printf("   ZS_Mask[15:0]: 0x%4.4X\n",ZSmask15to0);
 	  }
 	}
 	else {
-		printf("CM=1 Compact mode, no extra words here\n");
+		printf("   CM=1 Compact mode, this means that there are no extra words here\n");
 	}
 	//
 	// then 4 trailer words
 	//
+	cout << "Next come 3 'Pre-trailer' words followed by the 'Trailer'" << endl;
 	jpt = jpt + 8;
-	printf("Pre-Trailer 3: 0x%4.4X  {DAQsamples[4:0]=%d,DAQwords[10:0]=%d}\n",
-		hdata[jpt],hdata[jpt]>>11,hdata[jpt]&0x3FF);
-        printf("Pre-Trailer 2: 0x%4.4X  {CRC}\n",hdata[jpt+1]);
-//	printf("Pre-Trailer 2: 0x%4.4X  {0000,WordCount[11:0]=%d}\n",hdata[ipt+1],hdata[ipt+1]&0xFFF);
-	printf("Pre-Trailer 1: 0x%4.4X  {all zeros}\n",hdata[jpt+2]);
-	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,00000000}\n",hdata[jpt+3],hdata[jpt+3]>>8);
-//	for (int i=0; i<4; i++) {
-//	  printf("Trailer %d: 0x%4.4X\n",i+1,hdata[ipt]);
-//	  ipt++;
-//	}
-
+	printf("   Pre-Trailer 3: DAQsamples[4:0]=%d   DAQwords[10:0]=%d\n",
+		(hdata[jpt]>>11)&0x1F,hdata[jpt]&0x3FF);
+        printf("   Pre-Trailer 2: CRC (or perhaps replaced with word count?) = 0x%X\n",hdata[jpt+1]);
+	printf("   Pre-Trailer 1: Overwritten to 0x%X by the DCC\n",hdata[jpt+2]);
+	printf("   Trailer:       EVN[7:0]=0x%X (low byte is 0x%X, possibly overwritten by DCC)\n",(hdata[jpt+3]>>8)&0xFF,hdata[jpt+3]&0xFF);
 }
 
 void htr_data_print() {
@@ -601,7 +647,7 @@ void htr_data_print() {
 		for (int i=0; i<8; i++) {
 		  int iword = hdata[jpt+i];
 		  printf("Extra %d: 0x%4.4X  {Empty=%d,Full=%d,LatCnt[1:0]=%d,BCNtime[11:0]=%d\n",
-		  	i+1,iword,iword>>15,iword>>14,(iword>>13)&0x3,iword&0xFFF);
+		  	i+1,iword,(iword>>15)&1,(iword>>14)&1,(iword>>12)&0x3,iword&0xFFF);
 		}
 	  }
 	  else {
@@ -662,13 +708,8 @@ void htr_data_print() {
 	printf("Pre-Trailer 3: 0x%4.4X  {DAQsamples[4:0]=%d,DAQwords[10:0]=%d}\n",
 		hdata[jpt],hdata[jpt]>>11,hdata[jpt]&0x3FF);
         printf("Pre-Trailer 2: 0x%4.4X  {CRC}\n",hdata[jpt+1]);
-//	printf("Pre-Trailer 2: 0x%4.4X  {0000,WordCount[11:0]=%d}\n",hdata[ipt+1],hdata[ipt+1]&0xFFF);
-	printf("Pre-Trailer 1: 0x%4.4X  {all zeros}\n",hdata[jpt+2]);
-	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,00000000}\n",hdata[jpt+3],hdata[jpt+3]>>8);
-//	for (int i=0; i<4; i++) {
-//	  printf("Trailer %d: 0x%4.4X\n",i+1,hdata[ipt]);
-//	  ipt++;
-//	}
+	printf("Pre-Trailer 1: 0x%4.4X  {all zeros or possibly overwritten by DCC}\n",hdata[jpt+2]);
+	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,low byte=0x%X}\n",hdata[jpt+3],(hdata[jpt+3]>>8)&0xFF,hdata[jpt+3]&0xFF);
 
 }
 void htr_data_from_payload(const uint32_t *payload, int spigot) {
@@ -697,9 +738,9 @@ void htr_data_delete() {
 void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	if (header) {
           printf("                                      ");
-	  printf("                 Samples      CHTFCLBCOLFREBO\n");
+	  printf("                    Samples        CHTFCLBCOLFREBO\n");
           printf(" Spigot    EvN    BcN  OrN  HTR   fw  #TP");
-	  printf("     Htype  TP  QIE DCCw   TMMKEKEKDWELEZW TTC DLL\n");
+	  printf("       Htype      TP  QIE DCCw  TMMKEKEKDWELEZW TTC DLL\n");
         }
 	if (debugit) cout << "calling htr_fill_header" << endl;
 	htr_fill_header();
@@ -707,8 +748,8 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	// the following are all errors if == 1 except for the last one
 	//
 	if (debugit) cout << "**** nwc *** " << nwc << "  "  << hex << nwc << dec << endl;
-	printf("   %2d    %4d   %5d  %4d %3d 0x%2.2X   %2d     0x%2.2x   %2d   %2d  %3d   ",
-	    spigot,evn,bcn,orn,htrn,fw,ntps,htype,tpsamps,qiesamps,ndccw);
+	printf("   %2d    %4d   %5d  %4d %3d 0x%2.2X   %2d   0x%2.2x=%6s   %2d   %2d  %3d   ",
+	    spigot,evn,bcn,orn,htrn,fw,ntps,htype,htr_types[htype],tpsamps,qiesamps,ndccw);
 	// print out the bits that tell about errors, but only if it's set
 	int nerror = 0;
 	int ierror[15];
@@ -840,14 +881,14 @@ void print_htr_tpgs() {
 		int ntpsamp = 0;
 		for (int i=0; i<ntps; i++) {
 			int tword = tpgs[i];
-			cout << "0x" << hex << tword << dec << endl;
+//			cout << "0x" << hex << tword << dec << endl;
 			int high5 = (tword>>11)&0x1F;
 			if (high5 == 0) ntpsamp++; // should be the same number for all 3 TPs (each one is a different set of 8 muon bits)
 		}
-		cout << "  This is HO - TPs are very different, and not all that well used so caveat emptor holds." << endl;
+		cout << "  This is HO - TPs are very different, and not all that well used (caveat emptor holds)" << endl;
 		cout << "  I see " << ntps << " TP words here and " << ntpsamp << " samples for each muon bit:" << endl;
-		printf("   =Muon bits:222221111111111         \n");
-		printf("   Sample SOI 432109876543210987654321\n");
+		printf("   =>Muon bits:222221111111111         \n");
+		printf("    Sample SOI 432109876543210987654321\n");
 		for (int i=0; i<ntpsamp; i++) {
 			int t1 = tpgs[i];		// 1-8
 			int t2 = tpgs[i+4];		// 9-16
@@ -859,19 +900,26 @@ void print_htr_tpgs() {
 			int t28 = t2&0xFF;
 			int t38 = t3&0xFF;
 			if ( (soi1 != soi2) || (soi1 != soi3) || (soi2 != soi3) ) cout << "Problem!!! SOIs do not agree on TP " << i << endl;
-			cout << "      " << i << "    " << soi1 << "  " << 
+			cout << "       " << i << "    " << soi1 << "  " << 
 				(bitset<8>) t38 << (bitset<8>) t28 << (bitset<8>) t18 << endl;
 		}
-		cout << "  SOI is the 'sample of interest', 1 corresponds to BX of the L1A." << endl;
-		cout << "  There are 24 HO channles per HTR and so 24 possible muon bits could be set, see above." << endl;
+		cout << "   SOI is the 'sample of interest', 1 corresponds to BX of the L1A." << endl;
+		cout << "   There are 24 HO channles per HTR and so 24 possible muon bits could be set, see above." << endl;
 	}
 	else {
 		//
 		// HBHE or HF, standard TPs
 		//
-		cout << "  This is " << ntptype[htype] << " with " << ntps << " trigger primitives" << endl;
-		cout << "	 SLB  SLB" << endl;
-		cout << "         ID   CH   Z   SOI   TP" << endl;
+		int ntpsamp = ntps/ntptype[htype]; // should never be dividing by 0!
+		cout << "  This is " << htr_types[htype] << ": ";
+		cout << nslbtype[htype] << " SLB/HTR, " << ntptype[htype] << " TPs per HTR, " << 
+			ntps << " trigger primitives in the data here " << endl;
+		cout << "  There should be " << ntpsamp << " samples per channel and SOI should be at the same sample for all TPs" << endl;
+		cout << "  SLB ID = 1-6 specifies which SLB" << endl;
+		cout << "  SLB CH = 0-3 means A0,A1,C0,C1 for TOP FPGA and B0,B1,D0,D1 for BOT FPGA" << endl;
+		cout << "  TP is the 9-bit number that gets sent to RCT" << endl;
+		cout << "    Sample SLB_ID  SLB_CH Z SOI   TP" << endl;
+		int isamp = 1;
 		for (int i=0; i<ntps; i++) {
 			int tword = tpgs[i];
 			int tp_tag = (tword>>11)&0x1F;
@@ -880,11 +928,10 @@ void print_htr_tpgs() {
 			int z = (tword>>10)&0x1;
 			int soi = (tword>>9)&0x1;
 			int tp = (tword>>8)&0x1FF;
-			printf("          %d    %d   %d    %d  0x%2X\n",slb_id,slb_ch,z,soi,tp);
+			printf("        %d     %d       %d   %d   %d  0x%2X\n",isamp,slb_id,slb_ch,z,soi,tp);
+			isamp++;
+			if (isamp > ntpsamp) isamp = 1;
 		}
-		cout << "  SLB ID = 1-6 specifies which SLB" << endl;
-		cout << "  SLB CH = 0-3 means A0,A1,C0,C1 for TOP FPGA and B0,B1,D0,D1 for BOT FPGA" << endl;
-		cout << "  TP is the 9-bit number that gets sent to RCT" << endl;
 	}
 }
 
@@ -1325,9 +1372,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	  cout << "  2  Find event number and stop            ";
 	  cout << "  3  DCC hex dump (unformatted)            " << endl;
 	  cout << "  4  All HTR payload headers               ";
-	  cout << "  5  HTR payload (formatted)               " << endl;
-	  cout << "  6  HTR payload (unformatted)             ";
-	  cout << "  7  Search for anomalies (there are many) " << endl;
+	  cout << "  5  HTR payload (formatted or not)        " << endl;
+	  cout << "  6  Search for anomalies (there are many) " << endl;
 	  cout << "What is your pleasure?> ";
 	  int iw;
 	  scanf("%d",&iw);
@@ -1510,20 +1556,31 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	  }
 	  else if (iw == 5) {
 	    //
-	    // dump payload for this spigot, but prompt for which one first
+	    // dump payload for this spigot, but prompt for whether formatted or not, and which one first
 	    //
 	    if (isFEDopen) {
 		int spign;
 		cout << "Which spigot (0-" << spigots-1 << "): ";
 		scanf("%d",&spign);
+		int doform;
+		cout << "1=formatted (easier to see), 0=unformatted (a bit more detailed): ";
+		scanf("%d",&doform);
 		//
 		// extract the data for this spigot
 		//
 		htr_data_from_payload(payload,spign);
-		//
-		// printout in unformatted (or close to it anyway)
-		//
-		htr_data_print_formatted(spign);
+		if (doform == 1) {
+			//
+			// printout in unformatted (or close to it anyway)
+			//
+			htr_data_print_formatted(spign);
+		}
+		else {
+			//
+			// printout in unformatted (or close to it anyway)
+			//
+			htr_data_print();
+		}
 		//
 		// and delete the entire payload for this HTR
 		//
@@ -1534,31 +1591,6 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    }
 	  }
 	  else if (iw == 6) {
-	    //
-	    // dump payload for this spigot, but prompt for which one first
-	    //
-	    if (isFEDopen) {
-		int spign;
-		cout << "Which spigot (0-" << spigots-1 << "): ";
-		scanf("%d",&spign);
-		//
-		// extract the data for this spigot
-		//
-		htr_data_from_payload(payload,spign);
-		//
-		// printout in unformatted (or close to it anyway)
-		//
-		htr_data_print();
-		//
-		// and delete the entire payload for this HTR
-		//
-		htr_data_delete();
-	    }
-	    else {
-		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
-	    }
-	  }
-	  else if (iw == 7) {
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
 	    cout << "  1  Search for event with error(s) in HTR header" << endl;
