@@ -86,11 +86,20 @@ FILE* fout = NULL;
 uint32_t* hdata;  //here is the 16-bit HTR payload data
 uint32_t n16;     //number of 16-bit words for this HTR payload
 uint32_t* tpgs;
-uint32_t nqies;
-uint32_t* qies;
+//
+// qies, 240 max (24 x 10 time samples), with 0=mant,1=range,2=fiber,3=qie,4=capid,5=error
+#define MANT 0
+#define RANGE 1
+#define FIBER 2
+#define QIE 3
+#define CAPID 4
+#define ERROR 5
+int nqies;
+int qies[240][6];
+int qieFlavor = 0;
 uint32_t mant,range,capid,dv,er,addr,fib;
 int nFEDs = 0;
-int iFEDs[48];
+int iFEDs[100];  // there should not be that many, fewer than 20 probably but you never know
 const uint32_t* payload;
 bool debugit = false;
 int whichFED = -1;
@@ -100,7 +109,7 @@ int fed1, fed2;
 bool not12_13 = true;
 Handle<FEDRawDataCollection> rawdata;
 
-void payload_return(uint32_t s,
+void payload_spigot_header_return(uint32_t s,
  	int* nwords,int* htrerr,int* lrberr,int* ee,int* ep,int* eb,int* ev,int* et);
 void htr_data_from_payload(const uint32_t *payload, int spigot);
 void htr_fill_header();
@@ -147,8 +156,78 @@ class RawAnalyzer : public edm::EDAnalyzer {
       // ----------member data ---------------------------
 };
 
-void payload_return(uint32_t s,
+void setup_spigots(bool printout) {
+	//
+	// this takes the DCC (FED) payload and sets up pointers to the individual spigots
+	// note: there are only 12 spigots max for the DCC2 (as of July 2014)
+	//
+	// this has to be called as soon as you decide on which FED you want to look at
+	//
+	int nwords,htrerr,lrberr,ee,ep,eb,ev,et;
+	spigots = 0;
+	if (printout) cout << "  Spigot  #Words  HTRerr  LRBerr  E-P-B-V-T " << endl;
+	for (int i=0; i<18; i++) {
+	       uint32_t s = payload[i+6] & 0xFFFFFFFF;
+	       payload_spigot_header_return(s,&nwords,&htrerr,&lrberr,&ee,&ep,&eb,&ev,&et);
+	       if (nwords > 0) {
+	         hspigot[spigots] = s;
+		 wspigot[spigots] = nwords;
+	         if (printout) printf("  %4d    %5d    0x%2.2x    0x%2.2x   %d-%d-%d-%d-%d\n",
+	       	     spigots,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
+		 spigots++;
+	       }
+	}
+	if (printout) {
+		cout << " There are " << spigots << " spigots" << endl;
+	        printf(" What does E-P-B-V-T mean you ask?\n");
+		printf(
+		"  %sE%s = HTR input enabled in DCC         %sP%s = Data received from this HTR for this event\n",
+			bold,none,bold,none);
+		printf(
+		"  %sB%s = BX and ORN from HTR matches DCC  %sV%s = HTR event number matches TTC event number\n",
+			bold,none,bold,none);
+		printf("  %sT%s = LRB data was truncated on reading\n",bold,none);
+	}
+	ospigot[0] = 24;
+	for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
+	if (debugit) for (int i=0; i<spigots; i++) 
+	    	cout << dec << "Spigot " << i << " offset " << ospigot[i] << endl;
+}
+
+void htr_data_from_payload(const uint32_t *payload, int spigot) {
+	//
+	// start with a particular spigot, then take 32-bit data from "payload"
+	// and create 16-bit "hdata" words that holds the data for that spigot
+	//
+	if (debugit) cout << "htr_data_from_payload: ";
+	int iptr = ospigot[spigot];
+	int nwords = wspigot[spigot];
+	n16 = 2*nwords;
+	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords;
+	hdata = new uint32_t [n16];
+	for (int j=0; j<nwords; j++) {
+	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
+//		    printf("%d %d 0x%x\n",j,2*j,hdata[2*j]);
+	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
+//		    printf("%d %d 0x%x\n",j,2*j+1,hdata[2*j+1]);
+	}
+	if (debugit) cout << " leaving htr_data_from_payload" << endl;
+}
+
+void htr_data_delete() {
+	//
+	// delete the data collected in htr_data_from_payload
+	delete [] hdata;
+}
+
+void payload_spigot_header_return(uint32_t s,
  	int* nwords,int* htrerr,int* lrberr,int* ee,int* ep,int* eb,int* ev,int* et) {
+	//
+	// input should be a pointer to the n'th spigot of the DCC header, it tells you the
+	// number of words for the spigot, and some error bits
+	//
+	// this is used by setup_spigots
+	//
 	*nwords = (s & 0x3FF);
 	*htrerr = (s>>24) & 0xFF;
 	*lrberr = (s>>16) & 0xFF;
@@ -158,7 +237,12 @@ void payload_return(uint32_t s,
 	*ev = (s>>12) & 0x1;
 	*et = (s>>11) & 0x1;
 }
+
 void htr_fill_header() {
+	//
+	// this function digs out various spigot header words and puts it into local variables
+	// for ease of access
+	//
 	if (debugit) {
 	  cout << "htr_fill_header...hdata 0-7: ";
 	  for (int i=0; i<8; i++) printf("0x%X ",hdata[i]);
@@ -544,7 +628,7 @@ void htr_data_print() {
 	//
 	int nqiewords = 0;
 	if (format_version == 5) {
-		int jpt = 0;
+/*		int jpt = 0;
 		nqies = n16 - ntps - 20;
 		int nqiech = nqies/qiesamps;
 		printf("%3d QIE channels, %2d time samples per channel\n ",nqiech,qiesamps);
@@ -581,7 +665,8 @@ void htr_data_print() {
 		  printf(" ");
 		  for (int j=0; j<qiesamps; j++) printf("%2d/%d ",mants[j],ranges[j]);
 		  printf("\n");
-		}
+		}*/
+		cout << "HTR has format version 5 which is obsolete!!!!" << endl;
 	}
 	else if (format_version == 6) {
 		cout << "Version 6!" << endl;
@@ -712,28 +797,6 @@ void htr_data_print() {
 	printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,low byte=0x%X}\n",hdata[jpt+3],(hdata[jpt+3]>>8)&0xFF,hdata[jpt+3]&0xFF);
 
 }
-void htr_data_from_payload(const uint32_t *payload, int spigot) {
-	//
-	// sheesh, now go to 16 bit words. so we can follow the documentation
-	//
-	if (debugit) cout << "htr_data_from_payload: ";
-	int iptr = ospigot[spigot];
-	int nwords = wspigot[spigot];
-	n16 = 2*nwords;
-	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords;
-	hdata = new uint32_t [n16];
-	for (int j=0; j<nwords; j++) {
-	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
-//		    printf("%d %d 0x%x\n",j,2*j,hdata[2*j]);
-	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
-//		    printf("%d %d 0x%x\n",j,2*j+1,hdata[2*j+1]);
-	}
-	if (debugit) cout << " leaving htr_data_from_payload" << endl;
-}
-
-void htr_data_delete() {
-	delete [] hdata;
-}
 
 void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	if (header) {
@@ -807,7 +870,6 @@ void tpgs_from_htr() {
 		tpgs[j] = hdata[j+8];
 		if (debugit) cout << hex << j << " 0x" << tpgs[j] << endl;
 	}
-
 }
 
 void tpgs_delete() {
@@ -816,19 +878,104 @@ void tpgs_delete() {
 
 void qies_from_htr() {
 	//
-	// collect all of the qies into arrays
+	// collect all of the qies into arrays.  depends on formatVer, and flavor for formatVer=6
+	// since it's now Aug 2014, I'm not going to bother making this work for formatVer=5.  
 	//
-	nqies = n16 - ntps - 20;
-        if (debugit) cout << "qies_from_htr: nqies is " << nqies << endl;
-	qies = new uint32_t [nqies];
-	for (int j=0; j<(int) nqies; j++) qies[j] = hdata[j+ntps+8];
-
+	if (formatVer == 5) {
+		cout << "Sorry, but HTR format version 5 is no longer supported (at least not by me)" << endl;
+		return;
+	}
+	//
+	// ok, now we know which spigot, and hdata contains the words for that spigot providing
+	// htr_data_from_payload has already been called to fill hdata
+	//
+	// for the VME system, the most we can have is 24 channels times 10 time samples
+	//
+	nqies = 0;
+	int jpt = ntps + 8;	// 8 header words, plus number of TPs
+	int nqiewords = n16 - jpt - 12;  // 12 for the extra(8), pre-trailer(3), and trailer(1) 
+	int flavor=0,errf0=0,errf1=0,capid=0,channelid=0,thisqie=0,thisfiber=0;
+//	cout << "n16= " << n16 << " jpt= " << jpt << " nqiewords=" << nqiewords << endl;
+	for (int i=0; i<nqiewords; i++) {
+	  int iword = hdata[i+jpt];
+//	  cout << "  i=" << i << " hdata = 0x" << hex << iword << dec << endl;	  
+	  int bit31 = (iword>>15)&1;
+	  if (bit31 == 1) {
+	    //
+	    // channel header
+	    //
+	    flavor = (iword>>12)&0x7;
+	    qieFlavor = flavor;
+	    errf0 = (iword>>10)&0x1;
+	    errf1 = (iword>>11)&0x1;
+	    capid = (iword>>8)&0x3;
+	    channelid = iword&0xFF;
+	    thisqie = channelid&0x3;
+	    thisfiber = (channelid>>2)&0x7;
+//	    printf(
+//	       "0x%4.4X Header: Flavor=%d CapIdErr=%d  LinkErr=%d  1st Capid=%d Qie=%d Fiber=%d\n",
+//			iword,flavor,errf0,errf1,capid,thisqie,thisfiber);
+	  }
+	  else {
+	    if (flavor == 5) {
+		//
+		// compact mode.   increment capid by hand.  check ERROR word to be sure it's ok
+		//
+		int qie0 = iword&0x7F;
+		qies[nqies][RANGE] = (qie0>>6)&0x3;
+		qies[nqies][MANT] = qie0&0x1F;
+		qies[nqies][FIBER] = thisfiber;
+		qies[nqies][QIE] = thisqie;
+		qies[nqies][CAPID] = capid++;	// increment!
+		if (capid == 4) capid = 0;
+		if (errf0 || errf1) qies[nqies][ERROR] = true;
+		else qies[nqies][ERROR] = false;
+		nqies++;
+		int qie1 = (iword>>8)&0x7F;
+		qies[nqies][RANGE] = (qie1>>6)&0x3;
+		qies[nqies][MANT] = qie1&0x1F;
+		qies[nqies][FIBER] = thisfiber;
+		qies[nqies][QIE] = thisqie;
+		qies[nqies][CAPID] = capid++;	// increment!
+		if (capid == 4) capid = 0;
+		if (errf0 || errf1) {
+			if (errf0) qies[nqies][ERROR] = 1;
+			if (errf1) qies[nqies][ERROR] = qies[nqies][ERROR]&0x2;
+		}
+		else qies[nqies][ERROR] = 0;
+		nqies++;
+	    }
+	    else if (flavor == 6) {
+		int qie = (iword>>8)&0x7F;
+		int r = (qie>>6)&0x3;
+		int m = qie&0x1F;
+		int capid = (iword>>8)&0x3;
+		int dv = (iword>>10)&0x1;
+		int er = (iword>>11)&0x1;
+		qies[nqies][RANGE] = r;
+		qies[nqies][MANT] = m;
+		qies[nqies][FIBER] = thisfiber;
+		qies[nqies][QIE] = thisqie;
+		qies[nqies][CAPID] = capid;	// increment!
+		if (errf0 || errf1 || (er==1) || (dv=0) ) {
+			if (errf0) qies[nqies][ERROR] = 1;
+			if (errf1) qies[nqies][ERROR] = qies[nqies][ERROR]&0x2;
+			if (er==1) qies[nqies][ERROR] = qies[nqies][ERROR]&0x4;
+			if (dv==0) qies[nqies][ERROR] = qies[nqies][ERROR]&0x8;
+		}
+		else qies[nqies][ERROR] = 0;
+		nqies++;
+	    }
+	    else {
+		cout << "FLAVOR " << flavor << " IS UNKNOWN AND CONFUSES ME TERRIBLY!!!" << endl;
+		return;
+	    }
+	  }
+	}
 }
 
-void qies_delete() {
-	delete [] qies;
-}
 
+/*
 void qies_unpack(int which) {
 	//
 	// "which" goes from 0 to number of DAQ data words from trailer word -4
@@ -847,16 +994,23 @@ void qies_unpack_word(uint32_t data) {
 	addr = (data>>11) & 0x3;
 	fib = (data>>13) & 0x7;
 }
+*/
 
 void print_htr_qies() {
 	//
 	// qiesamps is the variable that you use to know how many time samples
 	//
-	int nqiech = nqies/qiesamps;
-	printf("There are %d QIE channels present, %d time samples per channel.  mant/range values: \n",
-	 	nqiech,qiesamps);
-	int ipt = 0;
-	for (int i=0; i<nqiech; i++) {
+	printf("There are %d QIE channels present, %d time samples per channel, QIE block flavor %d\n",
+	 	nqies,qiesamps,qieFlavor);
+	printf("  n  Fiber QIE CAPID Mant Range Error?\n");
+	for (int i=0; i<nqies; i++) {
+		if (qies[i][ERROR] == 0) printf("%3d:   %d    %d    %d     %2d   %d\n",
+			i+1,qies[i][FIBER],qies[i][QIE],qies[i][CAPID],qies[i][MANT],qies[i][RANGE]);
+		else printf("%3d:   %d    %d    %d     %2d   %d     %d\n",
+			i+1,qies[i][FIBER],qies[i][QIE],qies[i][CAPID],qies[i][MANT],qies[i][RANGE],qies[i][ERROR]);
+	}
+	cout << "Note: nonzero errors are packed like this: {DV,ER,Errf1,Errf0}" << endl;
+/*	for (int i=0; i<nqies; i++) {
 	  printf("%3d: ",i+1);
 	  for (int j=0; j<qiesamps; j++) {
 	    if (debugit) cout << "qies_unpack...";
@@ -866,7 +1020,7 @@ void print_htr_qies() {
 	  }
 	  printf("\n");
 	}	
-
+*/
 }
 
 void print_htr_tpgs() {
@@ -935,45 +1089,9 @@ void print_htr_tpgs() {
 	}
 }
 
-void setup_spigots(bool printout) {
-
-	    int nwords,htrerr,lrberr,ee,ep,eb,ev,et;
-	    spigots = 0;
-	    if (printout) cout << "  Spigot  #Words  HTRerr  LRBerr  E-P-B-V-T " << endl;
-	    for (int i=0; i<18; i++) {
-	       uint32_t s = payload[i+6] & 0xFFFFFFFF;
-	       payload_return(s,&nwords,&htrerr,&lrberr,&ee,&ep,&eb,&ev,&et);
-	       if (nwords > 0) {
-	         hspigot[spigots] = s;
-		 wspigot[spigots] = nwords;
-	         if (printout) printf("  %4d    %5d    0x%2.2x    0x%2.2x   %d-%d-%d-%d-%d\n",
-	       	     spigots,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
-		 spigots++;
-	       }
-	    }
-	    if (printout) {
-		cout << " There are " << spigots << " spigots" << endl;
-	        printf(" What does E-P-B-V-T mean you ask?\n");
-		printf(
-		"  %sE%s = HTR input enabled in DCC         %sP%s = Data received from this HTR for this event\n",
-			bold,none,bold,none);
-		printf(
-		"  %sB%s = BX and ORN from HTR matches DCC  %sV%s = HTR event number matches TTC event number\n",
-			bold,none,bold,none);
-		printf("  %sT%s = LRB data was truncated on reading\n",bold,none);
-	    }
-	    ospigot[0] = 24;
-	    for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
-	    if (debugit) for (int i=0; i<spigots; i++) 
-	    	cout << dec << "Spigot " << i << " offset " << ospigot[i] << endl;
-
-}
-
 bool find_htr_header_errors() {
 	return false;
 }
-
-
 
 void getFeds(int* nfeds, int* ifeds, bool printout) {
 	int kfeds = 0;
@@ -1350,7 +1468,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
    nFEDs = 0;
 //   cout << "+++++++++ Looking for FEDs ++++++++++++++" << endl;
 //   for (int i = 700; i<FEDNumbering::lastFEDId(); i++) {
-   for (int i = 700; i<732; i++) {
+   for (int i = 700; i<900; i++) {
 	const FEDRawData& data = rawdata->FEDData(i);
 	size=data.size();
 
@@ -1372,8 +1490,9 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	  cout << "  2  Find event number and stop            ";
 	  cout << "  3  DCC hex dump (unformatted)            " << endl;
 	  cout << "  4  All HTR payload headers               ";
-	  cout << "  5  HTR payload (formatted or not)        " << endl;
-	  cout << "  6  Search for anomalies (there are many) " << endl;
+	  cout << "  5  HTR payload dump (formatted or not)   " << endl;
+	  cout << "  6  Dump QIE data                         ";
+	  cout << "  7  Loop and search for specifics (to uncover anomolies, and there are many) " << endl;
 	  cout << "What is your pleasure?> ";
 	  int iw;
 	  scanf("%d",&iw);
@@ -1591,6 +1710,24 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    }
 	  }
 	  else if (iw == 6) {
+	    //
+	    // take a look at the QIE raw data, en mass
+	    //
+	    if (isFEDopen) {
+		int spign;
+		cout << "Which spigot (0-" << spigots-1 << "): ";
+		scanf("%d",&spign);
+		htr_data_from_payload(payload,spign);
+		htr_fill_header();
+		qies_from_htr();
+		print_htr_qies();
+		htr_data_delete();
+	    }
+	    else {
+		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
+	    }
+	  }
+	  else if (iw == 7) {
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
 	    cout << "  1  Search for event with error(s) in HTR header" << endl;
