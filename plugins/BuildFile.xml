@@ -3,4 +3,6 @@
 <use name="FWCore/ParameterSet"/>
 <use name="DataFormats/FEDRawData"/>
 <use name="root"/>
+<lib name="history"/>
+<lib name="readline"/>
 <flags EDM_PLUGIN="1"/>
