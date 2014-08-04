@@ -102,6 +102,7 @@ int qieFlavor = 0;
 uint32_t mant,range,capid,dv,er,addr,fib;
 int nFEDs = 0;
 int iFEDs[100];  // there should not be that many, fewer than 20 probably but you never know
+int iFEDsize[100];
 const uint32_t* payload;
 bool debugit = false;
 int whichFED = -1;
@@ -128,8 +129,8 @@ void qies_unpack_word(uint32_t data);
 void htr_data_print();
 void htr_data_print_formatted(int spign);
 void setup_spigots(bool printout);
-bool find_htr_header_errors();
-bool check_event_numbers(int irun, int iev);
+void find_htr_header_errors();
+void check_event_numbers(int irun, int iev);
 void getFeds(int* nfeds, int*ifeds, bool printout);
 bool checkFedBcN(int nfeds, int* ifeds, int* fedBcN);
 bool checkFedEvN(int nfeds, int* ifeds, int* fedEvN);
@@ -138,11 +139,13 @@ int get_spigot_bcn(int ispigot);
 int get_spigot_evn(int ispigot);
 int get_spigot_orn(int ispigot);
 bool checkFedBcNIdle(int nfeds, int* ifeds, int* fedBcNIdle);
-bool check_htr_header_errors(int irun,int iev);
+void check_htr_header_errors(int irun,int iev);
 char* vparse_input(const char* prompt, int num, ...);
 int getINT(const char* prompt);
 void moveup();
 int getHEX(const char* prompt);
+void print_error_warnings();
+
 //
 // class decleration
 //
@@ -1095,8 +1098,30 @@ void print_htr_tpgs() {
 	}
 }
 
-bool find_htr_header_errors() {
-	return false;
+void find_htr_header_errors() {
+}
+
+void print_error_warnings() {
+		printf("   %sbit0/OW%s=overflow warning goes away if L1A rate reduced\n",bold,none);
+		printf("   %sbit1/BZ%s=internal buffers busy\n",bold,none);
+		printf("   %sbit2/EE%s=empty event (because of previous BZ, includes only 1st 5 and last 3 words)\n",
+			bold,none);
+		printf("   %sbit3/RL%s=trig rule violation (rules 1 adn 2 of TDR 16.4.3)\n",bold,none);
+		printf("   %sbit4/FE%s=detects FE idle words or CCA corrupted words that should be suppressed\n",
+			bold,none);
+		printf("   %sbit5/LW%s=latency warning, Jose fifo has tuned latency since previous Tx\n",
+			bold,none);
+		printf("   %sbit6/OD%s=so called fiber data error, is OR of 9,10,11 below\n",bold,none);
+		printf("   %sbit7/CK%s=clocking error, ~TTCready || DLL_unlock\n",bold,none);
+		printf("   %sbit8/BE%s=Bunch count error if BCC does not wrap nicely when BC0 received\n",bold,none);
+		printf("   %sbit9/LK%s=OR of 8 fibers, each is ER || ~DV || Frame_error\n",bold,none);
+		printf("   %sbit10/CE%s=OR of 8 fibers, each is capid rotation error\n",bold,none);
+		printf("   %sbit11/FK%s=OR of 8 fibers, each is if FE flags are not right\n",bold,none);
+		printf("   %sbit12/TM%s=test mode (0=data, 1=pattern or counter etc)\n",bold,none);
+		printf("   %sbit13/HM%s=histo mode (if 1)\n",bold,none);
+		printf("   %sbit13/CT%s=calib trig (if 1, otherwise L1A event)\n",bold,none);
+		printf("   %sDLL%s  counts number of times DLL unlock since last reset (trust not)\n",bold,none);
+		printf("   %sTTC%s  TTCready, should always be asserted\n",bold,none);
 }
 
 void getFeds(int* nfeds, int* ifeds, bool printout) {
@@ -1306,7 +1331,7 @@ int get_spigot_orn(int ispigot) {
 
 int fedOrN_previous = 0;
 int OrN_delta;
-bool check_event_numbers(int irun, int iev) {
+void check_event_numbers(int irun, int iev) {
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
 	getFeds(&nfeds, ifeds, false);
@@ -1320,7 +1345,7 @@ bool check_event_numbers(int irun, int iev) {
 	bool ornok = checkFedOrN(nfeds, ifeds, &fedOrN);
 	OrN_delta = fedOrN - fedOrN_previous;
 	fedOrN_previous = fedOrN;
-	printf("Run %7d Ev %6d       Orn %10d : delta %10d\n",irun,iev,fedOrN,OrN_delta);	
+//	printf("==> Run %7d Ev %6d       Orn %10d : delta %10d\n",irun,iev,fedOrN,OrN_delta);	
 	bool bcnidle = checkFedBcNIdle(nfeds, ifeds, &fedBcnIdle);
 	bool result = bcnok && evnok && ornok && bcnidle;
 	if (!result) cout << "  ===> Problem with BCN/EVN/ORN!!!" << endl;
@@ -1328,10 +1353,11 @@ bool check_event_numbers(int irun, int iev) {
 //	else cout << "." << endl;
 //	return result && (iev < 4279);
 //	return result;
-	return true;
+	fflush(stdout);
+	return;
 }
 
-bool check_htr_header_errors(int irun,int iev) {
+void check_htr_header_errors(int irun,int iev) {
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
 	getFeds(&nfeds, ifeds, false);
@@ -1369,10 +1395,7 @@ bool check_htr_header_errors(int irun,int iev) {
 		}
 	  }
 	}
-	ncountse++;
-//	if ( (ncountse < nloopse) && (iev < 4279))  return true;
-	if (ncountse < nloopse) return true;
-	else return false;
+	return;
 }
 //
 // constants, enums and typedefs
@@ -1406,6 +1429,7 @@ RawAnalyzer::~RawAnalyzer() {
 // ------------ method called to for each event  ------------
 void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 
+   int this_run = e.id().run();
    int this_evn = e.id().event();
    isFEDopen = false;
    if (printbegin) cout << "---> Run: " << e.id().run() << " Event: " << e.id().event() << endl;
@@ -1426,47 +1450,38 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
        //
        // stop on events where there are any errors in the HTR header
        //
-       if (!find_htr_header_errors()) return;
+       find_htr_header_errors();
+       fflush(stdout);
+       ncountse++;
+       if (ncountse < nloopse) return;
+       fflush(stdout);
+       printbegin = true;
        searching = false;
      }
      else if (criteria == 2) {
        //
        // cycle through and printout stuff about ORN, BCN, EVN, BCN idle, etc
        //
-      if (check_event_numbers(int (e.id().run()),int (e.id().event()))) {
-//fflush(stdout);
-	return;
-      }
-      printbegin = true;
-      searching = false;
+       check_event_numbers(this_run,this_evn);
+       fflush(stdout);
+       ncountse++;
+       if (ncountse < nloopse) return;
+       fflush(stdout);
+       printbegin = true;
+       searching = false;
      }
      else if (criteria == 3) {
 	//
 	// report any HTR that has any errors set in it's header.  This will produce a lot of output!
 	//
-	if (check_htr_header_errors(int (e.id().run()),int (e.id().event()))) return;
+	check_htr_header_errors(this_run,this_evn);
+	fflush(stdout);
+	ncountse++;
+	if (ncountse < nloopse) return;
+	void print_error_warnings();
+	fflush(stdout);
         printbegin = true;
 	searching = false;
-		printf("   %sbit0/OW%s=overflow warning goes away if L1A rate reduced\n",bold,none);
-		printf("   %sbit1/BZ%s=internal buffers busy\n",bold,none);
-		printf("   %sbit2/EE%s=empty event (because of previous BZ, includes only 1st 5 and last 3 words)\n",
-			bold,none);
-		printf("   %sbit3/RL%s=trig rule violation (rules 1 adn 2 of TDR 16.4.3)\n",bold,none);
-		printf("   %sbit4/FE%s=detects FE idle words or CCA corrupted words that should be suppressed\n",
-			bold,none);
-		printf("   %sbit5/LW%s=latency warning, Jose fifo has tuned latency since previous Tx\n",
-			bold,none);
-		printf("   %sbit6/OD%s=so called fiber data error, is OR of 9,10,11 below\n",bold,none);
-		printf("   %sbit7/CK%s=clocking error, ~TTCready || DLL_unlock\n",bold,none);
-		printf("   %sbit8/BE%s=Bunch count error if BCC does not wrap nicely when BC0 received\n",bold,none);
-		printf("   %sbit9/LK%s=OR of 8 fibers, each is ER || ~DV || Frame_error\n",bold,none);
-		printf("   %sbit10/CE%s=OR of 8 fibers, each is capid rotation error\n",bold,none);
-		printf("   %sbit11/FK%s=OR of 8 fibers, each is if FE flags are not right\n",bold,none);
-		printf("   %sbit12/TM%s=test mode (0=data, 1=pattern or counter etc)\n",bold,none);
-		printf("   %sbit13/HM%s=histo mode (if 1)\n",bold,none);
-		printf("   %sbit13/CT%s=calib trig (if 1, otherwise L1A event)\n",bold,none);
-		printf("   %sDLL%s  counts number of times DLL unlock since last reset (trust not)\n",bold,none);
-		printf("   %sTTC%s  TTCready, should always be asserted\n",bold,none);
      }
    }
 //
@@ -1479,10 +1494,21 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	size=data.size();
 
 	if (size>0 && (FEDids_.empty() || FEDids_.find(i)!=FEDids_.end())) {
-	  cout << " Found FED# " << setw(4) << i << " " << setw(8) << size << " bytes " << endl;
+//	  cout << " Found FED# " << setw(4) << i << " " << setw(8) << size << " bytes " << endl;
+	  iFEDsize[nFEDs] = size;
 	  iFEDs[nFEDs++] = i;
 	}
    }
+   cout << "+++++++++++++++++++++++++++++++++++++++++" << endl;
+   if (nFEDs>0) {
+      cout << "FED(#bytes): ";
+      for (int i=0; i<nFEDs; i++) {
+	printf("%d(%d) ",iFEDs[i],iFEDsize[i]);
+        if ( (i+1)%10 == 0) cout << endl << "             ";
+      }
+      cout << endl;
+   }
+   else cout << "No FEDs found here.   Maybe this is not an HCAL file?" << endl;
    cout << "+++++++++++++++++++++++++++++++++++++++++" << endl;
    //
    // this might be old fashioned but what the heck...
@@ -1652,26 +1678,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	        //
 		// just to be helpful, printout info about what all those things mean
 		//
-		printf("   %sbit0/OW%s=overflow warning goes away if L1A rate reduced\n",bold,none);
-		printf("   %sbit1/BZ%s=internal buffers busy\n",bold,none);
-		printf("   %sbit2/EE%s=empty event (because of previous BZ, includes only 1st 5 and last 3 words)\n",
-			bold,none);
-		printf("   %sbit3/RL%s=trig rule violation (rules 1 adn 2 of TDR 16.4.3)\n",bold,none);
-		printf("   %sbit4/FE%s=detects FE idle words or CCA corrupted words that should be suppressed\n",
-			bold,none);
-		printf("   %sbit5/LW%s=latency warning, Jose fifo has tuned latency since previous Tx\n",
-			bold,none);
-		printf("   %sbit6/OD%s=so called fiber data error, is OR of 9,10,11 below\n",bold,none);
-		printf("   %sbit7/CK%s=clocking error, ~TTCready || DLL_unlock\n",bold,none);
-		printf("   %sbit8/BE%s=Bunch count error if BCC does not wrap nicely when BC0 received\n",bold,none);
-		printf("   %sbit9/LK%s=OR of 8 fibers, each is ER || ~DV || Frame_error\n",bold,none);
-		printf("   %sbit10/CE%s=OR of 8 fibers, each is capid rotation error\n",bold,none);
-		printf("   %sbit11/FK%s=OR of 8 fibers, each is if FE flags are not right\n",bold,none);
-		printf("   %sbit12/TM%s=test mode (0=data, 1=pattern or counter etc)\n",bold,none);
-		printf("   %sbit13/HM%s=histo mode (if 1)\n",bold,none);
-		printf("   %sbit13/CT%s=calib trig (if 1, otherwise L1A event)\n",bold,none);
-		printf("   %sDLL%s  counts number of times DLL unlock since last reset (trust not)\n",bold,none);
-		printf("   %sTTC%s  TTCready, should always be asserted\n",bold,none);
+		print_error_warnings();
 	    }
 	    else {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
@@ -1728,33 +1735,44 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    }
 	  }
 	  else if (!strcmp(creturn,"LOOP")) {
+	    int done2 = 0;
+	    criteria = 0;
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
-	    cout << "  1  Search for event with error(s) in HTR header" << endl;
-	    cout << "  2  Printout BCN, ORN, Evn, BCNidle, etc" << endl;
-	    cout << "  3  Report on any HTR that has any error bits set in the header" << endl;
-	    cout << "What is your pleasure?> ";
-	    scanf("%d",&criteria);
-	    if (criteria > 0 && criteria < 4) {
-	      searching = true;
-	      printbegin = false;
-	      if (criteria == 2) {
-		int iw;
-		cout << "But not 12 and 13? (1=right, 0=use both): ";
-		cin >> iw;
+	    cout << "  HERR         Search for event with error(s) in HTR header" << endl;
+	    cout << "  EVNUM        Printout BCN, ORN, Evn, BCNidle, etc" << endl;
+	    cout << "  BERR         Report on any HTR that has any error bits set in the header" << endl;
+	    cout << "  QUIT         Return to MAIN" << endl;
+	    while (done2 == 0) {
+	      char* creturn2 = vparse_input("LOOP>",4,"QUIT","HERR","EVNUM","BERR");
+	      if (!strcmp(creturn2,"UNKNOWN")) cout << "Hmm, not a legal command.  Try again? " << endl << endl;
+	      else if (!strcmp(creturn2,"QUIT")) done2 = 1;
+	      else if (!strcmp(creturn2,"HERR")) {
+		criteria = 1;
+		nloopse = getINT("How many events to loop over? :");
+		ncountse = 0;
+		searching = true;
+		return;
+	      }
+	      else if (!strcmp(creturn2,"EVNUM")) {
+		criteria = 2;
+		int iw = getINT("1=do not consider spigots 12 and 13 (calibration), 0=use both: ");		
 		if (iw == 0) not12_13 = false;
 		else not12_13 = true;
-	      }
-	      else if (criteria == 3) {
-		cout << "How many events to loop over? :";
-		cin >> nloopse;
+		nloopse = getINT("How many events to loop over? :");
 		ncountse = 0;
+		searching = true;
+		return;
 	      }
-	      return;
+	      else if (!strcmp(creturn2,"BERR")) {
+		criteria = 3;
+		nloopse = getINT("How many events to loop over? :");
+		ncountse = 0;
+		searching = true;
+		return;
+	      }
 	    }
-	    else cout << "Hey, follow instructions, read the menu!" << endl;
 	  }
-	  else cout << "Hmm, can't follow instructions?  Try again" << endl;
 	    
    }
 }
@@ -1790,6 +1808,7 @@ char* vparse_input(const char* prompt, int num, ...)
 	// get the input
 	//
 	do {
+//cout << "vparse_input before readline nargs=" << nargs << endl;
 	   cmd=readline(prompt);
 	   for (i=0; i<500 && cmd[i]!=0; i++) {
 	      cans[i]=toupper(cmd[i]);
@@ -1797,10 +1816,14 @@ char* vparse_input(const char* prompt, int num, ...)
 	   }
 	   bcans[i] = 0;
 	   cans[i++]=0;
+//cout << "bcans='" << bcans << "'" << endl << "cans='" << cans << "'" << endl;
+//cout << "history bytes before=" << history_total_bytes() << endl;
 	   if (i>0) add_history(bcans);
+//cout << "history bytes after=" << history_total_bytes() << endl;
 	   free(cmd);
 	   printf("\n\n");
 	   pch = strtok(cans," ");
+//cout << "pch=" << pch << " nargs= " << nargs << endl;
 	} while (pch == NULL);
 	int alen = strlen(pch);
 	//
@@ -1808,13 +1831,19 @@ char* vparse_input(const char* prompt, int num, ...)
 	//
 	nargs = 0;
 	pch2 = strtok(bcans," ");
+//cout << "1 pch2=" << pch << endl;
 	pch2 = strtok(NULL," ");
+//cout << "2 pch2=" << pch << endl;
+//cout << "nargs=" << nargs << endl;
+//if (nargs>0) for (int k=0; k<nargs; k++) cout << "args[" << k << "]=" << args[k] << endl;
 	while (pch2 != NULL) {
 	  args[nargs] = new char[100];
 	  strcpy(args[nargs],pch2);
 	  pch2 = strtok(NULL," ");
 	  nargs++;
+//cout << "  pch2=" << pch << "nargs= " << nargs << endl;
 	}
+//if (nargs>0) for (int k=0; k<nargs; k++) cout << "args[" << k << "]=" << args[k] << endl;
 	//
 	// init arg list for variable number of args
 	//
