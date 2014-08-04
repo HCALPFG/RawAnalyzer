@@ -39,6 +39,9 @@
 #include <iomanip>
 #include <bitset>
 #include <fstream>
+#include <stdarg.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 #include "TH1.h"
 #include "TH2.h"
 
@@ -47,19 +50,18 @@ using namespace edm;
 using namespace std;
 
 #define bold  "\33[0;1m"
-#define red   "\033[0;31m"        /* 0 -> normal ;  31 -> red */
-#define cyan  "\033[1;36m"        /* 1 -> bold ;  36 -> cyan */
-#define green "\033[4;32m"        /* 4 -> underline ;  32 -> green */
-#define blue  "\033[9;34m"        /* 9 -> strike ;  34 -> blue */
- 
+#define red   "\033[0;31m"        // 0 -> normal ;  31 -> red 
+#define cyan  "\033[1;36m"        // 1 -> bold ;  36 -> cyan
+#define green "\033[4;32m"        // 4 -> underline ;  32 -> green
+#define blue  "\033[9;34m"        // 9 -> strike ;  34 -> blue 
 #define black  "\033[0;30m"
 #define brown  "\033[0;33m"
 #define magenta  "\033[0;35m"
 #define gray  "\033[0;37m"
- 
-#define none   "\033[0m"        /* to flush the previous property */
+#define none   "\033[0m"        // to flush the previous property
 
-char ESC=27;
+int nargs = 0;
+char *args[100]; //max of 10 arguments on the stack
 //
 // HTR types, starting from 0:  HO,HBHE1+,HBHE2+,HBHE3+,HBHE4+,HBHE5+,HBHE6+,HBHE7+,
 //                              HF,HBHE1-,HBHE2-,HBHE3-,HBHE4-,HBHE5-,HBHE6-,HBHE7-
@@ -137,6 +139,10 @@ int get_spigot_evn(int ispigot);
 int get_spigot_orn(int ispigot);
 bool checkFedBcNIdle(int nfeds, int* ifeds, int* fedBcNIdle);
 bool check_htr_header_errors(int irun,int iev);
+char* vparse_input(const char* prompt, int num, ...);
+int getINT(const char* prompt);
+void moveup();
+int getHEX(const char* prompt);
 //
 // class decleration
 //
@@ -1481,31 +1487,32 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
    //
    // this might be old fashioned but what the heck...
    //	    
+   char* creturn;
    int done = 0;
    while (done == 0) {	      
 	  cout << "===========================================";
 	  cout << "===========================================" << endl;
-	  cout << "  0  Next (^C then 0 to quit)              ";
-	  cout << "  1  Select FED and report header info     " << endl;
-	  cout << "  2  Find event number and stop            ";
-	  cout << "  3  DCC hex dump (unformatted)            " << endl;
-	  cout << "  4  All HTR payload headers               ";
-	  cout << "  5  HTR payload dump (formatted or not)   " << endl;
-	  cout << "  6  Dump QIE data                         ";
-	  cout << "  7  Loop and search for specifics (to uncover anomolies, and there are many) " << endl;
-	  cout << "What is your pleasure?> ";
-	  int iw;
-	  scanf("%d",&iw);
-	  if (iw == 0) done = 1;
-	  else if (iw == 1) {
+	  cout << "  NEXT       Next                                  " << endl;
+	  cout << "  FED        Select FED and report header info     " << endl;
+	  cout << "  EVENT      Find event number and stop            " << endl;
+	  cout << "  DCCHEX     DCC hex dump (unformatted)            " << endl;
+	  cout << "  SHEADERS   All HTR payload headers               " << endl;
+	  cout << "  SPEEK      HTR payload dump (formatted or not)   " << endl;
+	  cout << "  QIE        Dump QIE data                         " << endl;
+	  cout << "  LOOP       Loop and search for specifics (to uncover anomolies, and there are many) " << endl;
+	  cout << "  QUIT       try to quit (throws timeout exception)" << endl;
+	  creturn = vparse_input("Main>",9,"QUIT","NEXT","FED","EVENT","DCCHEX","SHEADERS","SPEEK","QIE","LOOP");
+	  if (!strcmp(creturn,"UNKNOWN")) cout << "Hmm, not a legal command.  Try again? " << endl << endl;
+	  else if (!strcmp(creturn,"QUIT")) throw cms::Exception("Timeout");
+	  else if (!strcmp(creturn,"NEXT")) return;
+	  else if (!strcmp(creturn,"FED")) {
 	    //
 	    // select which FED you want to see
 	    //
 	    cout << "There are " << nFEDs << " here: ";
 	    for (int i=0; i<nFEDs; i++) cout << iFEDs[i] << " ";
 	    cout << endl;
-	    cout << "Select FED (0=all)> ";
-	    cin >> whichFED;
+	    whichFED = getINT("Select FED (0=all)> ");
 	    isFEDopen = true;
 	    if (whichFED == 0) cout << "Be careful, you still need to choose 1 FED for other menu items!!!!"<<endl;
 	    for (int ifed=0; ifed<nFEDs; ifed++) {
@@ -1565,14 +1572,13 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		}
 	     }
 	  }
-	  else if (iw == 2) {
+	  else if (!strcmp(creturn,"EVENT")) {
 	    searching = true;
 	    criteria = 0;
-	    cout << "Event number: ";
-	    scanf("%d",&find_evn);
+	    find_evn = getINT("Enter event number to look for> ");
 	    return;
 	  }
-	  else if (iw == 3) {
+	  else if (!strcmp(creturn,"DCCHEX")) {
 	    //
 	    // unformatted hex dump of the entire DCC payload (all spigots)
 	    //
@@ -1596,13 +1602,11 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 4) {
+	  else if (!strcmp(creturn,"SHEADERS")) {
 	    //
 	    // formatted dump of the headers for all HTRs (spigots)
 	    //
-	    cout << "This FED (1) or all FEDs (0) :";
-	    int kfed;
-	    cin >> kfed;
+	    int kfed = getINT("This FED (1) or all FEDs (0) :");
 	    if (kfed == 0 || (kfed > 0 && isFEDopen)) {
 		if (kfed == 0) {
 	    	  for (int ifed=0; ifed<nFEDs; ifed++) {
@@ -1673,17 +1677,14 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 5) {
+	  else if (!strcmp(creturn,"SPEEK")) {
 	    //
 	    // dump payload for this spigot, but prompt for whether formatted or not, and which one first
 	    //
 	    if (isFEDopen) {
-		int spign;
-		cout << "Which spigot (0-" << spigots-1 << "): ";
-		scanf("%d",&spign);
-		int doform;
-		cout << "1=formatted (easier to see), 0=unformatted (a bit more detailed): ";
-		scanf("%d",&doform);
+		cout << " There are " << spigots << " here. ";
+		int spign = getINT("Which spigot do you want? ");
+		int doform = getINT("enter 1=formatted (easier to see), 0=unformatted (a bit more detailed): ");
 		//
 		// extract the data for this spigot
 		//
@@ -1709,14 +1710,13 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 6) {
+	  else if (!strcmp(creturn,"QIE")) {
 	    //
 	    // take a look at the QIE raw data, en mass
 	    //
 	    if (isFEDopen) {
-		int spign;
-		cout << "Which spigot (0-" << spigots-1 << "): ";
-		scanf("%d",&spign);
+		cout << " There are " << spigots << " here. ";
+		int spign = getINT("Which spigot do you want? ");
 		htr_data_from_payload(payload,spign);
 		htr_fill_header();
 		qies_from_htr();
@@ -1727,7 +1727,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		cout << "PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!" << endl;
 	    }
 	  }
-	  else if (iw == 7) {
+	  else if (!strcmp(creturn,"LOOP")) {
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
 	    cout << "  1  Search for event with error(s) in HTR header" << endl;
@@ -1774,6 +1774,97 @@ void RawAnalyzer::beginJob() {
 // ------------ method called once each job just after ending the event loop  ------------
 void 
 RawAnalyzer::endJob() {
+}
+
+char* vparse_input(const char* prompt, int num, ...)
+{
+	char* pch;
+	char* pch2;
+	char* cmd;
+	char* cwhich;
+	va_list arguments;
+	int i;
+	char cans[500];
+	char bcans[500];
+	//
+	// get the input
+	//
+	do {
+	   cmd=readline(prompt);
+	   for (i=0; i<500 && cmd[i]!=0; i++) {
+	      cans[i]=toupper(cmd[i]);
+	      bcans[i] = cmd[i];
+	   }
+	   bcans[i] = 0;
+	   cans[i++]=0;
+	   if (i>0) add_history(bcans);
+	   free(cmd);
+	   printf("\n\n");
+	   pch = strtok(cans," ");
+	} while (pch == NULL);
+	int alen = strlen(pch);
+	//
+	// put any other arguments onto the stack
+	//
+	nargs = 0;
+	pch2 = strtok(bcans," ");
+	pch2 = strtok(NULL," ");
+	while (pch2 != NULL) {
+	  args[nargs] = new char[100];
+	  strcpy(args[nargs],pch2);
+	  pch2 = strtok(NULL," ");
+	  nargs++;
+	}
+	//
+	// init arg list for variable number of args
+	//
+	va_start(arguments, num);
+	//
+	// loop over possible arguments, look for a match
+	//
+	for (i=0; i<num; i++) {
+	  cwhich = va_arg(arguments, char*);
+	  int icmp = strncmp(cwhich,pch,alen);
+	  if (icmp == 0) return cwhich;
+	}
+	return (char*) "UNKNOWN";
+}
+int getINT(const char* prompt) {
+
+	int temp;
+	//
+	// anything on the stack?
+	//
+	if (nargs == 0) {
+	  printf("\n%s",prompt);
+	  scanf("%d",&temp);
+	  return temp;
+	}
+	else {
+//	  printf("Stack has %d on it\n",nargs);
+	    sscanf(args[0],"%d",&temp);
+	}
+
+
+///	else {
+//	  printf("Stack has %d on it\n",nargs);
+//	  temp = atoi(args[0]);
+	  moveup();
+	  return temp;
+}
+void moveup() {
+	//
+	// nargs-1 points to the top of the stack
+	//
+	if (nargs == 1) {
+	  nargs = 0;
+	  return;
+	}
+	//
+	// more than 1 arg on the stack - move them all up
+	//
+	for (int i=0; i<nargs; i++) args[i] = args[i+1];
+	nargs--;
 }
 
 //define this as a plug-in
