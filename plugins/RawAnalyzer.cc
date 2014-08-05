@@ -76,6 +76,8 @@ bool isFEDopen = false;
 bool printbegin = true;
 int nloopse = 0;
 int ncountse = 0;
+int qieMANTcut = 0;
+int qieEXPcut = 0;
 int find_evn = 0;
 int evn, sr, evn1, evn2, orn, htrn, bcn, formatVer, npresamp, ndll, ntps, fw, subV, pipeline, htype;
 int tpsamps, qiesamps, ndccw, nwc, reserved, us, cm;
@@ -89,6 +91,16 @@ uint32_t* hdata;  //here is the 16-bit HTR payload data
 uint32_t n16;     //number of 16-bit words for this HTR payload
 uint32_t* tpgs;
 //
+// nominal qie to fC....close enough I think
+int qie2fC[4][32]={
+{-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,15,  //0-15
+17,19,21,23,25,27,29,32,35,38,42,46,50,54,59,64}, //16-31
+{59,64,69,74,79,84,89,94,99,104,109,114,119,124,129,137,  //32-47
+147,157,167,177,187,197,209,224,239,254,272,292,312,334,359,384}, //48-63
+{359,384,409,434,459,484,509,534,559,584,609,634,659,684,709,747, //64-79
+797,847,897,947,997,1047,1109,1184,1259,1334,1422,1522,1622,1734,1859,1984}, //80-95
+{1859,1984,2109,2234,2359,2484,2609,2734,2859,2984,3109,3234,3359,3484,3609,3797, //96-101
+4047,4297,4547,4797,5047,5297,5609,5984,6359,6734,7172,7672,8172,8734,9359,9984}}; //102-127
 // qies, 240 max (24 x 10 time samples), with 0=mant,1=range,2=fiber,3=qie,4=capid,5=error
 #define MANT 0
 #define RANGE 1
@@ -98,6 +110,8 @@ uint32_t* tpgs;
 #define ERROR 5
 int nqies;
 int qies[240][6];
+// qiestats[FED-700(100)][SPIGOT(16)][FIBER(8)][QIE(3)][CAPID(4)][0=number,1=sum(x),2=sum(x^2)]
+int qiestats[100][16][8][3][4][3];
 int qieFlavor = 0;
 uint32_t mant,range,capid,dv,er,addr,fib;
 int nFEDs = 0;
@@ -145,6 +159,8 @@ int getINT(const char* prompt);
 void moveup();
 int getHEX(const char* prompt);
 void print_error_warnings();
+void check_qie(int type, int irun, int iev);
+void qies_stats_print();
 
 //
 // class decleration
@@ -404,7 +420,7 @@ void htr_data_print_formatted(int spign) {
 			int qie0 = iword&0x7F;
 			int r0 = (qie0>>6)&0x3;
 			int m0 = qie0&0x1F;
-			printf(" %2d/%d %2d/%d",m1,r1,m0,r0);
+			printf(" %2d/%d %2d/%d",m0,r0,m1,r1);
 		    }
 		    else if (flavor == 6) {
 			int qie = (iword>>8)&0x7F;
@@ -545,7 +561,7 @@ void htr_data_print() {
 	printf("Header 2: 0x%4.4X   {EVN[23:8}=%d, full EVN=%d}\n",hdata[1],hdata[1],evn);
 	printf("Header 3: 0x%4.4X   {1,CT,HM,TM,FK,CE,LK,BE,CK,OD,LW,LE,RL,EE,BZ,OW}\n",hdata[2]);
 	printf("Header 4: 0x%4.4X   {ORN[4:0]=%d,HTRmodnumber[10:0]=%d}\n",hdata[3],orn,htrn);
-	printf("Header 5: 0x%4.4X   {Ver[3:0]=%d,BCN[11:0]=%d}\n",hdata[4],formatVer,bcn);
+	printf("Header 5: 0x%4.4X   {Version[3:0]=%d,BCN[11:0]=%d}\n",hdata[4],formatVer,bcn);
 	printf("Header 6: 0x%4.4X   {#TPs[7:0]=%d,#Presamples[4:0]=%d,DLL[1:0]=%d,TTCready=%d}\n",
 		hdata[5],ntps,npresamp,ndll,ttcready);
 	printf("Header 7: 0x%4.4X   {US=%d,CM=%d,Reserved=%d,SubV[3:0]=%d,fw[7:0]=0x%X}\n",
@@ -620,8 +636,8 @@ void htr_data_print() {
 				int slb_ch = tp_tag & 0x3;
 				int z = (tword>>10)&0x1;
 				int soi = (tword>>9)&0x1;
-				int tp = (tword>>8)&0x1FF;
-				printf("0x%4.4X={slb_id=%d,slb_ch=%d,z=%d,soi=%d,tp=%d} ",
+				int tp = tword&0x1FF;
+				printf("0x%4.4X={slb_id=%d,slb_ch=%d,z=%d,soi=%d,tp=%d}\n",
 					tword,slb_id,slb_ch,z,soi,tp);
 			}
 		}
@@ -937,9 +953,13 @@ void qies_from_htr() {
 		qies[nqies][QIE] = thisqie;
 		qies[nqies][CAPID] = capid++;	// increment!
 		if (capid == 4) capid = 0;
-		if (errf0 || errf1) qies[nqies][ERROR] = true;
-		else qies[nqies][ERROR] = false;
+		if (errf0 || errf1) {
+			if (errf0) qies[nqies][ERROR] = 1;
+			if (errf1) qies[nqies][ERROR] = qies[nqies][ERROR]&0x2;
+		}
+		else qies[nqies][ERROR] = 0;
 		nqies++;
+		// now get the upper half, which is the next qie
 		int qie1 = (iword>>8)&0x7F;
 		qies[nqies][RANGE] = (qie1>>6)&0x3;
 		qies[nqies][MANT] = qie1&0x1F;
@@ -1032,6 +1052,83 @@ void print_htr_qies() {
 */
 }
 
+void check_qie(int type, int irun, int iev) {
+	//
+	// cycle through the QIEs, print info according to type.
+	// type=0 just do statistics
+	// type=1 statistics AND apply mantissa and range cuts
+	//
+	int nfeds = 0;
+	int ifeds[50];  // ususally 32 max
+	getFeds(&nfeds, ifeds, false);
+	if (nfeds < 1) cout << "NO FEDS FOR THIS EVENT!!!!!" << endl;
+	for (int i=0; i<nfeds; i++) {
+	  const FEDRawData& data = rawdata->FEDData(ifeds[i]);
+	  int f = ifeds[i] - 700;
+	  FEDHeader header(data.data());
+	  FEDTrailer trailer(data.data()+size-8);
+	  payload=(uint32_t*)(data.data());
+	  //
+	  // what about the spigots?
+	  //
+	  setup_spigots(false);
+	  for (int j=0; j<spigots; j++) {
+	    htr_data_from_payload(payload,j);
+	    htr_fill_header();
+	    qies_from_htr();
+	    for (int k=0; k<nqies; k++) {
+		int m = qies[k][MANT];
+		int r = qies[k][RANGE];
+		int ifib = qies[k][FIBER];
+		int iqie = qies[k][QIE];
+		int icap = qies[k][CAPID];
+		int fc = qie2fC[r][m];
+		qiestats[f][j][ifib][iqie][icap][0]++;
+		qiestats[f][j][ifib][iqie][icap][1] += fc;
+		qiestats[f][j][ifib][iqie][icap][2] += fc*fc;
+		bool rangeGT = r > qieEXPcut;
+		bool rangeEQmantGT = (r == qieEXPcut) && (m >= qieMANTcut);
+		if ( (type == 1) && (rangeGT || rangeEQmantGT) )
+		  printf("===>Run=%6d Ev=%7d FED=%3d Spigot=%2d Fiber=%1d QIE=%1d CAPID=%1d Mant=%2d Exp=%1d\n",
+		  irun,iev,ifeds[i],j,ifib,iqie,icap,m,r);
+	    }
+	    htr_data_delete();
+	  }
+	}
+}
+
+void qies_stats_print() {
+	//
+	// loop over qiestats, check if there were any increments [word 0]
+	//
+	cout << "Linearized QIE average and SD: " << endl;
+	printf(" FED Spigot Fiber QIE Capid        Av        SD     Num\n");
+	for (int i=0; i<100; i++) {
+	  int ifed = i + 700;	// FED number
+	  for (int j=0; j<16; j++) {
+	    // spigot
+	    for (int k=0; k<8; k++) {
+	      // fiber
+	      for (int l=0; l<3; l++) {
+		// qie
+		for (int m=0; m<4; m++) {
+		  // capid
+		  int num = qiestats[i][j][k][l][m][0];
+		  if (num > 0) {
+		    double xnum = (double) num;
+		    double av = qiestats[i][j][k][l][m][1]/xnum;
+		    double av2 = qiestats[i][j][k][l][m][2]/xnum;
+		    double sd = sqrt(av2 - av*av);
+		    printf(" %3d    %2d    %1d    %1d    %1d   %9.2f  %9.2f  %6d\n",
+			ifed,j,k,l,m,av,sd,num);
+		  }
+		}
+	      }
+	    }
+	  }
+	}
+}
+
 void print_htr_tpgs() {
 	cout << "TPs are next: " << endl;
 	if (htype == 0) {
@@ -1090,7 +1187,7 @@ void print_htr_tpgs() {
 			int slb_ch = tp_tag & 0x3;
 			int z = (tword>>10)&0x1;
 			int soi = (tword>>9)&0x1;
-			int tp = (tword>>8)&0x1FF;
+			int tp = tword&0x1FF;
 			printf("        %d     %d       %d   %d   %d  0x%2X\n",isamp,slb_id,slb_ch,z,soi,tp);
 			isamp++;
 			if (isamp > ntpsamp) isamp = 1;
@@ -1182,7 +1279,7 @@ bool checkFedBcN(int nfeds, int* ifeds, int* fedBcN) {
 bool checkFedEvN(int nfeds, int* ifeds, int* fedEvN) {
 	//
 	// see if all EvN are the same for all FEDs (should be)
-	//
+	// (assume getFed already called)
 	bool first = true;
 	int theEvN = -1;
 	int numsame = 1;
@@ -1483,6 +1580,32 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
         printbegin = true;
 	searching = false;
      }
+     else if (criteria == 4) {
+       //
+       // cycle through and printout stuff if any QIE passes cuts
+       //
+       check_qie(1, this_run,this_evn);
+       fflush(stdout);
+       ncountse++;
+       if (ncountse < nloopse) return;
+       fflush(stdout);
+//       qies_stats_print();
+       printbegin = true;
+       searching = false;
+     }
+     else if (criteria == 5) {
+       //
+       // cycle through and printout qie stats at the end
+       //
+       check_qie(0, this_run,this_evn);
+       fflush(stdout);
+       ncountse++;
+       if (ncountse < nloopse) return;
+       fflush(stdout);
+       qies_stats_print();
+       printbegin = true;
+       searching = false;
+     }
    }
 //
 //   Handle<FEDRawDataCollection> rawdata;
@@ -1689,7 +1812,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    // dump payload for this spigot, but prompt for whether formatted or not, and which one first
 	    //
 	    if (isFEDopen) {
-		cout << " There are " << spigots << " here. ";
+		cout << "There are " << spigots << " spigots here. ";
 		int spign = getINT("Which spigot do you want? ");
 		int doform = getINT("enter 1=formatted (easier to see), 0=unformatted (a bit more detailed): ");
 		//
@@ -1740,17 +1863,20 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    cout << "===========================================";
 	    cout << "===========================================" << endl;
 	    cout << "  HERR         Search for event with error(s) in HTR header" << endl;
-	    cout << "  EVNUM        Printout BCN, ORN, Evn, BCNidle, etc" << endl;
+	    cout << "  EVNUM        Printout inconsistencies in BCN, ORN, Evn, BCNidle, etc" << endl;
 	    cout << "  BERR         Report on any HTR that has any error bits set in the header" << endl;
+	    cout << "  QIECUT       Set a cut and stop when you find any QIE that is greater or equal" << endl;
+	    cout << "  QIESTATS     Run through events and calculate QIE Mean and SD per CAPID (and printout)" << endl;
 	    cout << "  QUIT         Return to MAIN" << endl;
 	    while (done2 == 0) {
-	      char* creturn2 = vparse_input("LOOP>",4,"QUIT","HERR","EVNUM","BERR");
+	      char* creturn2 = vparse_input("LOOP>",6,"QUIT","HERR","EVNUM","BERR","QIECUT","QIESTATS");
 	      if (!strcmp(creturn2,"UNKNOWN")) cout << "Hmm, not a legal command.  Try again? " << endl << endl;
 	      else if (!strcmp(creturn2,"QUIT")) done2 = 1;
 	      else if (!strcmp(creturn2,"HERR")) {
 		criteria = 1;
 		nloopse = getINT("How many events to loop over? :");
 		ncountse = 0;
+		printbegin = false;
 		searching = true;
 		return;
 	      }
@@ -1761,6 +1887,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		else not12_13 = true;
 		nloopse = getINT("How many events to loop over? :");
 		ncountse = 0;
+		printbegin = false;
 		searching = true;
 		return;
 	      }
@@ -1768,8 +1895,55 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		criteria = 3;
 		nloopse = getINT("How many events to loop over? :");
 		ncountse = 0;
+		printbegin = false;
 		searching = true;
 		return;
+	      }
+	      else if (!strcmp(creturn2,"QIECUT")) {
+		criteria = 4;
+		nloopse = getINT("How many events to loop over? :");
+		ncountse = 0;
+		qieMANTcut = getINT("QIE cut (mantissa, 0-31): ");
+		qieEXPcut = getINT("QIE cut (range, 0-3): ");
+		printbegin = false;
+		searching = true;
+		//
+		// clear some arrays
+		//
+	        for (int i=0; i<100; i++) {
+		 for (int j=0; j<16; j++) {
+		  for (int k=0; k<8; k++) {
+		   for (int l=0; l<3; l++) {
+		    for (int m=0; m<4; m++) {
+		     for (int n=0; n<3; n++) qiestats[i][j][k][l][m][n] = 0;
+		    }//m
+		   }//l
+		  }//k
+	 	 }//j
+	        }//i
+	        return;
+	      }
+	      else if (!strcmp(creturn2,"QIESTATS")) {
+		criteria = 5;
+		nloopse = getINT("How many events to loop over? :");
+		ncountse = 0;
+		printbegin = false;
+		searching = true;
+		//
+		// clear some arrays
+		//
+	        for (int i=0; i<100; i++) {
+		 for (int j=0; j<16; j++) {
+		  for (int k=0; k<8; k++) {
+		   for (int l=0; l<3; l++) {
+		    for (int m=0; m<4; m++) {
+		     for (int n=0; n<3; n++) qiestats[i][j][k][l][m][n] = 0;
+		    }//m
+		   }//l
+		  }//k
+	 	 }//j
+	        }//i
+	        return;
 	      }
 	    }
 	  }
@@ -1808,7 +1982,6 @@ char* vparse_input(const char* prompt, int num, ...)
 	// get the input
 	//
 	do {
-//cout << "vparse_input before readline nargs=" << nargs << endl;
 	   cmd=readline(prompt);
 	   for (i=0; i<500 && cmd[i]!=0; i++) {
 	      cans[i]=toupper(cmd[i]);
@@ -1816,14 +1989,10 @@ char* vparse_input(const char* prompt, int num, ...)
 	   }
 	   bcans[i] = 0;
 	   cans[i++]=0;
-//cout << "bcans='" << bcans << "'" << endl << "cans='" << cans << "'" << endl;
-//cout << "history bytes before=" << history_total_bytes() << endl;
 	   if (i>0) add_history(bcans);
-//cout << "history bytes after=" << history_total_bytes() << endl;
 	   free(cmd);
 	   printf("\n\n");
 	   pch = strtok(cans," ");
-//cout << "pch=" << pch << " nargs= " << nargs << endl;
 	} while (pch == NULL);
 	int alen = strlen(pch);
 	//
@@ -1831,19 +2000,13 @@ char* vparse_input(const char* prompt, int num, ...)
 	//
 	nargs = 0;
 	pch2 = strtok(bcans," ");
-//cout << "1 pch2=" << pch << endl;
 	pch2 = strtok(NULL," ");
-//cout << "2 pch2=" << pch << endl;
-//cout << "nargs=" << nargs << endl;
-//if (nargs>0) for (int k=0; k<nargs; k++) cout << "args[" << k << "]=" << args[k] << endl;
 	while (pch2 != NULL) {
 	  args[nargs] = new char[100];
 	  strcpy(args[nargs],pch2);
 	  pch2 = strtok(NULL," ");
 	  nargs++;
-//cout << "  pch2=" << pch << "nargs= " << nargs << endl;
 	}
-//if (nargs>0) for (int k=0; k<nargs; k++) cout << "args[" << k << "]=" << args[k] << endl;
 	//
 	// init arg list for variable number of args
 	//
@@ -1869,17 +2032,9 @@ int getINT(const char* prompt) {
 	  scanf("%d",&temp);
 	  return temp;
 	}
-	else {
-//	  printf("Stack has %d on it\n",nargs);
-	    sscanf(args[0],"%d",&temp);
-	}
-
-
-///	else {
-//	  printf("Stack has %d on it\n",nargs);
-//	  temp = atoi(args[0]);
-	  moveup();
-	  return temp;
+	else sscanf(args[0],"%d",&temp);
+	moveup();
+	return temp;
 }
 void moveup() {
 	//
