@@ -60,6 +60,8 @@ using namespace std;
 #define gray  "\033[0;37m"
 #define none   "\033[0m"        // to flush the previous property
 
+const char* CodeVersion="06AUG2014-v0";
+
 int nargs = 0;
 char *args[100]; //max of 10 arguments on the stack
 //
@@ -112,6 +114,7 @@ int nqies;
 int qies[240][6];
 // qiestats[FED-700(100)][SPIGOT(16)][FIBER(8)][QIE(3)][CAPID(4)][0=number,1=sum(x),2=sum(x^2)]
 int qiestats[100][16][8][3][4][3];
+int qiestatsAny[100][16];
 int qieFlavor = 0;
 uint32_t mant,range,capid,dv,er,addr,fib;
 int nFEDs = 0;
@@ -137,7 +140,7 @@ void tpgs_delete();
 void print_htr_tpgs();
 void qies_from_htr();
 void qies_delete();
-void print_htr_qies();
+void print_htr_qies(int spigot);
 void qies_unpack(int which);
 void qies_unpack_word(uint32_t data);
 void htr_data_print();
@@ -362,10 +365,10 @@ void htr_data_print_formatted(int spign) {
 	  int ib1 = (if1>>15)&0x1;
 	  int fl1 = (if1>>12)&0x7;
 	  if (fl1 == 5) {
-	    cout << "   Flavor  Errf0/1 Capid Fib QIE ---- QIE samples, mant/range ----" << endl;
+	    cout << "   Flavor  Errf0/1 Capid Fib QIE ---- QIE samples, mant/range ---- (SOI in bold)" << endl;
 	  }
 	  else if (fl1 == 6) {
-	    cout << "   Flavor  Errf0/1 Capid Fib QIE" << endl;
+	    cout << "   Flavor  Errf0/1 Capid Fib QIE (SOI in bold)" << endl;
 	  }
 	  else {
 		cout << "What?  Flavor " << if1 << " is illegal, something is seriously wrong" << endl;
@@ -381,10 +384,12 @@ void htr_data_print_formatted(int spign) {
 	  bool allfibers = true;
 	  int capid1 = -1;
 	  int fib1 = -1;
+	  int isamp = 0;
 	  for (int i=0; i<nqiewords; i++) {
 		int iword = hdata[jpt+i];
 		int bit31 = (iword>>15)&1;
 		if (bit31 == 1) {
+		    isamp = 0;
 		    if (i>0) cout << endl;
 		    //
 		    // channel header
@@ -420,7 +425,12 @@ void htr_data_print_formatted(int spign) {
 			int qie0 = iword&0x7F;
 			int r0 = (qie0>>6)&0x3;
 			int m0 = qie0&0x1F;
-			printf(" %2d/%d %2d/%d",m0,r0,m1,r1);
+			if (isamp == npresamp) printf("%s %2d/%d%s",bold,m0,r0,none);
+			else printf(" %2d/%d",m0,r0);
+			isamp++;
+			if (isamp == npresamp) printf("%s %2d/%d%s",bold,m1,r1,none);
+			else printf(" %2d/%d",m1,r1);
+			isamp++;
 		    }
 		    else if (flavor == 6) {
 			int qie = (iword>>8)&0x7F;
@@ -429,7 +439,11 @@ void htr_data_print_formatted(int spign) {
 			int capid = (iword>>8)&0x3;
 			int dv = (iword>>10)&0x1;
 			int er = (iword>>11)&0x1;
-			printf("   Qie(mant/range)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",m,r,dv,er,capid);
+			if (isamp == npresamp) printf(
+			"%s   Qie(mant/range)=%2d/%d  DV=%d  ER=%d  Capid=%d%s\n",
+				bold,m,r,dv,er,capid,none);
+			else printf("   Qie(mant/range)=%2d/%d  DV=%d  ER=%d  Capid=%d\n",m,r,dv,er,capid);
+			isamp++;
 		    }
 		    else cout << "FLAVOR " << flavor << " IS UNKNOWN AND CONFUSES ME TERRIBLY!!!" << endl;
 		}
@@ -825,10 +839,10 @@ void htr_data_print() {
 
 void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	if (header) {
-          printf("                                      ");
-	  printf("                    Samples        CHTFCLBCOLFREBO\n");
-          printf(" Spigot    EvN    BcN  OrN  HTR   fw  #TP");
-	  printf("       Htype      TP  QIE DCCw  TMMKEKEKDWELEZW TTC DLL\n");
+          printf("                               ");
+	  printf("Samples               CHTFCLBCOLFREBO\n");
+          printf(" Spigot    EvN    BcN   OrN HTR  fw   #TP");
+	  printf("      Htype      TP  QIE Presamp DCCw  TMMKEKEKDWELEZW TTC DLL\n");
         }
 	if (debugit) cout << "calling htr_fill_header" << endl;
 	htr_fill_header();
@@ -836,8 +850,8 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	// the following are all errors if == 1 except for the last one
 	//
 	if (debugit) cout << "**** nwc *** " << nwc << "  "  << hex << nwc << dec << endl;
-	printf("   %2d    %4d   %5d  %4d %3d 0x%2.2X   %2d   0x%2.2x=%6s   %2d   %2d  %3d   ",
-	    spigot,evn,bcn,orn,htrn,fw,ntps,htype,htr_types[htype],tpsamps,qiesamps,ndccw);
+	printf("   %2d    %4d   %5d  %4d %3d 0x%2.2X   %2d   0x%2.2x=%6s   %2d   %2d   %2d     %3d  ",
+	    spigot,evn,bcn,orn,htrn,fw,ntps,htype,htr_types[htype],tpsamps,qiesamps,npresamp,ndccw);
 	// print out the bits that tell about errors, but only if it's set
 	int nerror = 0;
 	int ierror[15];
@@ -1025,31 +1039,50 @@ void qies_unpack_word(uint32_t data) {
 }
 */
 
-void print_htr_qies() {
+void print_htr_qies(int spigot) {
 	//
 	// qiesamps is the variable that you use to know how many time samples
 	//
-	printf("There are %d QIE channels present, %d time samples per channel, QIE block flavor %d\n",
-	 	nqies,qiesamps,qieFlavor);
-	printf("  n  Fiber QIE CAPID Mant Range Error?\n");
+	printf("\n\nBehold info for %d QIEs from %s spigot %d: %d time samples/QIE, %d HCAL towers. QIE block flavor is %d\n",
+	 	nqies,htr_types[htype],spigot,qiesamps,nqies/qiesamps,qieFlavor);
+	cout << " Fib QIE  ===> Samples, format is 'capid:mant/range(error)'  (SOI=bold)  See below about 'errors'." << endl;
+	int old_qie = -1;
+	int isamp = 0;
 	for (int i=0; i<nqies; i++) {
-		if (qies[i][ERROR] == 0) printf("%3d:   %d    %d    %d     %2d   %d\n",
-			i+1,qies[i][FIBER],qies[i][QIE],qies[i][CAPID],qies[i][MANT],qies[i][RANGE]);
-		else printf("%3d:   %d    %d    %d     %2d   %d     %d\n",
-			i+1,qies[i][FIBER],qies[i][QIE],qies[i][CAPID],qies[i][MANT],qies[i][RANGE],qies[i][ERROR]);
-	}
-	cout << "Note: nonzero errors are packed like this: {DV,ER,Errf1,Errf0}" << endl;
-/*	for (int i=0; i<nqies; i++) {
-	  printf("%3d: ",i+1);
-	  for (int j=0; j<qiesamps; j++) {
-	    if (debugit) cout << "qies_unpack...";
-	    qies_unpack(ipt++);
-	    if (debugit) cout << "done" << endl;
-	    printf("%2d/%d ",mant,range);
+	  int ifiber = qies[i][FIBER];
+	  int iqie = qies[i][QIE];
+	  int icap = qies[i][CAPID];
+	  int mant = qies[i][MANT];
+	  int range = qies[i][RANGE];
+	  int ierr = qies[i][ERROR];
+	  if (old_qie == iqie) {
+	  	//
+		// print out info for qie here
+		//
+		if (isamp == npresamp) {
+		  if (ierr == 0) printf("%s%1d:%2.2d/%1d       %s",bold,icap,mant,range,none);
+		  else printf("%s%1d:%2.2d/%1d(0x%X) %s",bold,icap,mant,range,ierr,none);
+		}
+		else {
+		  if (ierr == 0) printf("%1d:%2.2d/%1d       ",icap,mant,range);
+		  else printf("%1d:%2.2d/%1d(0x%X) ",icap,mant,range,ierr);
+		}
+		isamp++;
 	  }
-	  printf("\n");
-	}	
-*/
+	  else {
+		//
+		// print fiber and qie number (SOI will never be the 1st one....)
+		// 
+		if (i == 0) printf("  %d   %d:  ",ifiber,iqie);
+		else printf("\n  %d   %d:  ",ifiber,iqie);
+		if (ierr == 0) printf("%1d:%2.2d/%1d       ",icap,mant,range);
+		else printf("%1d:%2.2d/%1d(0x%X) ",icap,mant,range,ierr);
+		old_qie = iqie;
+		isamp = 1;
+	  }
+	}
+	cout << endl;
+	cout << "   [Note: if error=0 then not shown, otherwise is packed like this: {DV,ER,Errf1,Errf0}]"<< endl;
 }
 
 void check_qie(int type, int irun, int iev) {
@@ -1084,6 +1117,7 @@ void check_qie(int type, int irun, int iev) {
 		int icap = qies[k][CAPID];
 		int fc = qie2fC[r][m];
 		qiestats[f][j][ifib][iqie][icap][0]++;
+		qiestatsAny[f][j] = 1;
 		qiestats[f][j][ifib][iqie][icap][1] += fc;
 		qiestats[f][j][ifib][iqie][icap][2] += fc*fc;
 		bool rangeGT = r > qieEXPcut;
@@ -1102,27 +1136,30 @@ void qies_stats_print() {
 	// loop over qiestats, check if there were any increments [word 0]
 	//
 	cout << "Linearized QIE average and SD: " << endl;
-	printf(" FED Spigot Fiber QIE Capid        Av        SD     Num\n");
 	for (int i=0; i<100; i++) {
 	  int ifed = i + 700;	// FED number
 	  for (int j=0; j<16; j++) {
 	    // spigot
-	    for (int k=0; k<8; k++) {
-	      // fiber
-	      for (int l=0; l<3; l++) {
-		// qie
-		for (int m=0; m<4; m++) {
-		  // capid
-		  int num = qiestats[i][j][k][l][m][0];
-		  if (num > 0) {
-		    double xnum = (double) num;
-		    double av = qiestats[i][j][k][l][m][1]/xnum;
-		    double av2 = qiestats[i][j][k][l][m][2]/xnum;
-		    double sd = sqrt(av2 - av*av);
-		    printf(" %3d    %2d    %1d    %1d    %1d   %9.2f  %9.2f  %6d\n",
-			ifed,j,k,l,m,av,sd,num);
+	    if (qiestatsAny[i][j] > 0) {
+	      cout << "FED number " << ifed << " Spigot " << j << ":" << endl;
+	      printf(" Fiber QIE Capid        Av         SD     Num\n");
+	      for (int k=0; k<8; k++) {
+	        // fiber
+	        for (int l=0; l<3; l++) {
+		  // qie
+		  for (int m=0; m<4; m++) {
+		    // capid
+		    int num = qiestats[i][j][k][l][m][0];
+		    if (num > 0) {
+		      double xnum = (double) num;
+		      double av = qiestats[i][j][k][l][m][1]/xnum;
+		      double av2 = qiestats[i][j][k][l][m][2]/xnum;
+		      double sd = sqrt(av2 - av*av);
+		      printf("   %1d    %1d    %1d   %9.2f  %9.2f  %6d\n",
+			k,l,m,av,sd,num);
+		    }
 		  }
-		}
+	        }
 	      }
 	    }
 	  }
@@ -1168,7 +1205,7 @@ void print_htr_tpgs() {
 	}
 	else {
 		//
-		// HBHE or HF, standard TPs
+		// HBHE or HF, standard TPs.   assumes TPGS_FROM_HTR already called
 		//
 		int ntpsamp = ntps/ntptype[htype]; // should never be dividing by 0!
 		cout << "  This is " << htr_types[htype] << ": ";
@@ -1178,8 +1215,11 @@ void print_htr_tpgs() {
 		cout << "  SLB ID = 1-6 specifies which SLB" << endl;
 		cout << "  SLB CH = 0-3 means A0,A1,C0,C1 for TOP FPGA and B0,B1,D0,D1 for BOT FPGA" << endl;
 		cout << "  TP is the 9-bit number that gets sent to RCT" << endl;
-		cout << "    Sample SLB_ID  SLB_CH Z SOI   TP" << endl;
+//		cout << "    Sample SLB_ID  SLB_CH Z  SOI   TP" << endl;
+		cout << "  SLB  CH:  ===> Samples (format n=TP(Z), SOI in bold)" << endl;
 		int isamp = 1;
+		int old_id = -1;
+		int old_ch = -1;
 		for (int i=0; i<ntps; i++) {
 			int tword = tpgs[i];
 			int tp_tag = (tword>>11)&0x1F;
@@ -1188,7 +1228,31 @@ void print_htr_tpgs() {
 			int z = (tword>>10)&0x1;
 			int soi = (tword>>9)&0x1;
 			int tp = tword&0x1FF;
-			printf("        %d     %d       %d   %d   %d  0x%2X\n",isamp,slb_id,slb_ch,z,soi,tp);
+			if ( (slb_id == old_id) && (slb_ch == old_ch) ) {
+			  //
+			  // just print the Z and TP, bold if SOI
+			  //
+			  if (soi == 1) printf("%s%d=0x%2.2X(%1d) %s",bold,isamp,tp,z,none);
+			  else printf("%d=0x%2.2X(%1d) ",isamp,tp,z);
+			}
+			else {
+			  //
+			  // print SLB and channel number
+			  //
+			  if (slb_id == old_id) {
+				if (i == 0) printf("        %1d:  ",slb_ch);
+				else printf("\n        %1d:  ",slb_ch);
+			  }
+			  else {
+				if (i == 0) printf("    %1d   %1d:  ",slb_id,slb_ch);
+				else printf("\n    %1d   %1d:  ",slb_id,slb_ch);
+			  }
+			  if (soi == 1) printf("%s%d=0x%2.2X(%1d) %s",bold,isamp,tp,z,none);
+			  else printf("%d=0x%2.2X(%1d) ",isamp,tp,z);
+			  old_id = slb_id;
+			  old_ch = slb_ch;
+			}
+//			printf("        %d     %d       %d   %d   %d  0x%2.2X\n",isamp,slb_id,slb_ch,z,soi,tp);
 			isamp++;
 			if (isamp > ntpsamp) isamp = 1;
 		}
@@ -1812,7 +1876,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    // dump payload for this spigot, but prompt for whether formatted or not, and which one first
 	    //
 	    if (isFEDopen) {
-		cout << "There are " << spigots << " spigots here. ";
+		cout << "There are " << spigots << " spigots here (starting at 0). ";
 		int spign = getINT("Which spigot do you want? ");
 		int doform = getINT("enter 1=formatted (easier to see), 0=unformatted (a bit more detailed): ");
 		//
@@ -1845,12 +1909,12 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    // take a look at the QIE raw data, en mass
 	    //
 	    if (isFEDopen) {
-		cout << " There are " << spigots << " here. ";
+		cout << "There are " << spigots << " spigots here (starting at 0). ";
 		int spign = getINT("Which spigot do you want? ");
 		htr_data_from_payload(payload,spign);
 		htr_fill_header();
 		qies_from_htr();
-		print_htr_qies();
+		print_htr_qies(spign);
 		htr_data_delete();
 	    }
 	    else {
@@ -1905,6 +1969,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		ncountse = 0;
 		qieMANTcut = getINT("QIE cut (mantissa, 0-31): ");
 		qieEXPcut = getINT("QIE cut (range, 0-3): ");
+		cout << "OK, starting loop. There will be no reporting, please be patient...." << endl;
 		printbegin = false;
 		searching = true;
 		//
@@ -1912,6 +1977,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		//
 	        for (int i=0; i<100; i++) {
 		 for (int j=0; j<16; j++) {
+		  qiestatsAny[i][j] = 0;
 		  for (int k=0; k<8; k++) {
 		   for (int l=0; l<3; l++) {
 		    for (int m=0; m<4; m++) {
@@ -1926,6 +1992,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	      else if (!strcmp(creturn2,"QIESTATS")) {
 		criteria = 5;
 		nloopse = getINT("How many events to loop over? :");
+		cout << "OK, starting loop. There will be no reporting, please be patient...." << endl;
 		ncountse = 0;
 		printbegin = false;
 		searching = true;
@@ -1934,6 +2001,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		//
 	        for (int i=0; i<100; i++) {
 		 for (int j=0; j<16; j++) {
+		  qiestatsAny[i][j] = 0;
 		  for (int k=0; k<8; k++) {
 		   for (int l=0; l<3; l++) {
 		    for (int m=0; m<4; m++) {
@@ -1959,7 +2027,9 @@ void RawAnalyzer::beginJob() {
   cout << "* in that data.  To do that, you will need to pay attention to 2 documents, both of which might be evolving.     *" << endl;
   cout << "* Tullio's HTR documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/HTR/design/HTR_MainFPGA.pdf *" << endl;
   cout << "* Eric's DCC documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/DCC/FormatGuide.pdf           *" << endl; 
-  cout << "* Best of luck.   (Drew Baden, drew@umd.edu, July 2014)                                                          *" << endl;
+  printf("* Best of luck.   Version is %s%s%s",bold,CodeVersion,none);
+  cout << "                                                                        *" << endl;
+  cout << "* (Drew Baden, drew@umd.edu, Aug 2014)                                                                           *" << endl;
   cout << "******************************************************************************************************************" << endl;
 }
 
