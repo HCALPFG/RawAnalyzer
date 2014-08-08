@@ -60,7 +60,7 @@ using namespace std;
 #define gray  "\033[0;37m"
 #define none   "\033[0m"        // to flush the previous property
 
-const char* CodeVersion="06AUG2014-v0";
+const char* CodeVersion="08AUG2014-v0";
 
 int nargs = 0;
 char *args[100]; //max of 10 arguments on the stack
@@ -148,7 +148,7 @@ void htr_data_print_formatted(int spign);
 void setup_spigots(bool printout);
 void find_htr_header_errors();
 void check_event_numbers(int irun, int iev);
-void getFeds(int* nfeds, int*ifeds, bool printout);
+void getFeds(int* nfeds, int* ifeds, bool printout, int irun, int iev);
 bool checkFedBcN(int nfeds, int* ifeds, int* fedBcN);
 bool checkFedEvN(int nfeds, int* ifeds, int* fedEvN);
 bool checkFedOrN(int nfeds, int* ifeds, int* fedOrN);
@@ -1093,7 +1093,7 @@ void check_qie(int type, int irun, int iev) {
 	//
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
-	getFeds(&nfeds, ifeds, false);
+	getFeds(&nfeds, ifeds, false, irun, iev);
 	if (nfeds < 1) cout << "NO FEDS FOR THIS EVENT!!!!!" << endl;
 	for (int i=0; i<nfeds; i++) {
 	  const FEDRawData& data = rawdata->FEDData(ifeds[i]);
@@ -1285,7 +1285,7 @@ void print_error_warnings() {
 		printf("   %sTTC%s  TTCready, should always be asserted\n",bold,none);
 }
 
-void getFeds(int* nfeds, int* ifeds, bool printout) {
+void getFeds(int* nfeds, int* ifeds, bool printout, int irun, int iev) {
 	int kfeds = 0;
 	for (int i=700; i<732; i++) {
 	  const FEDRawData& data = rawdata->FEDData(i);
@@ -1300,7 +1300,7 @@ void getFeds(int* nfeds, int* ifeds, bool printout) {
 	}
 	*nfeds = kfeds;
 	if (kfeds > 0 && printout) {
-		cout << "Feds: ";
+		printf("Run %6d Event %6d Feds: ",irun,iev);
 		for (int i=0; i<kfeds; i++) cout << " " << ifeds[i];
 		cout << endl;
 	}
@@ -1495,7 +1495,7 @@ int OrN_delta;
 void check_event_numbers(int irun, int iev) {
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
-	getFeds(&nfeds, ifeds, false);
+	getFeds(&nfeds, ifeds, false, irun, iev);
 	if (nfeds < 1) cout << "NO FEDS FOR THIS EVENT!!!!!" << endl;
 	int fedBcN, fedEvN, fedOrN, fedBcnIdle;
 	//
@@ -1521,7 +1521,7 @@ void check_event_numbers(int irun, int iev) {
 void check_htr_header_errors(int irun,int iev) {
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
-	getFeds(&nfeds, ifeds, false);
+	getFeds(&nfeds, ifeds, false, irun, iev);
 	if (nfeds < 1) cout << "NO FEDS FOR THIS EVENT!!!!!" << endl;
 	for (int i=0; i<nfeds; i++) {
 	  const FEDRawData& data = rawdata->FEDData(ifeds[i]);
@@ -1670,6 +1670,20 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
        printbegin = true;
        searching = false;
      }
+     else if (criteria == 6) {
+       //
+       // cycle through and printout list of FEDS so we can see if events are consistent
+       //
+       int nfeds = 0;
+       int ifeds[50];  // ususally 32 max
+       getFeds(&nfeds, ifeds, true, this_run, this_evn);
+       fflush(stdout);
+       ncountse++;
+       if (ncountse < nloopse) return;
+       fflush(stdout);
+       printbegin = true;
+       searching = false;
+     }
    }
 //
 //   Handle<FEDRawDataCollection> rawdata;
@@ -1703,7 +1717,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
    char* creturn;
    int done = 0;
    while (done == 0) {	      
-	  cout << "===========================================";
+	  cout << "=========== Run " << this_run << " Event " << this_evn << " ===========";
 	  cout << "===========================================" << endl;
 	  cout << "  NEXT       Next                                  " << endl;
 	  cout << "  FED        Select FED and report header info     " << endl;
@@ -1931,9 +1945,10 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	    cout << "  BERR         Report on any HTR that has any error bits set in the header" << endl;
 	    cout << "  QIECUT       Set a cut and stop when you find any QIE that is greater or equal" << endl;
 	    cout << "  QIESTATS     Run through events and calculate QIE Mean and SD per CAPID (and printout)" << endl;
+	    cout << "  FEDLIST      Run through events and printout list of FEDs" << endl;
 	    cout << "  QUIT         Return to MAIN" << endl;
 	    while (done2 == 0) {
-	      char* creturn2 = vparse_input("LOOP>",6,"QUIT","HERR","EVNUM","BERR","QIECUT","QIESTATS");
+	      char* creturn2 = vparse_input("LOOP>",7,"QUIT","HERR","EVNUM","BERR","QIECUT","QIESTATS","FEDLIST");
 	      if (!strcmp(creturn2,"UNKNOWN")) cout << "Hmm, not a legal command.  Try again? " << endl << endl;
 	      else if (!strcmp(creturn2,"QUIT")) done2 = 1;
 	      else if (!strcmp(creturn2,"HERR")) {
@@ -2013,6 +2028,14 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	        }//i
 	        return;
 	      }
+	      else if (!strcmp(creturn2,"FEDLIST")) {
+		criteria = 6;
+		nloopse = getINT("How many events to loop over? :");
+		ncountse = 0;
+		printbegin = false;
+		searching = true;
+		return;
+	      }
 	    }
 	  }
 	    
@@ -2027,9 +2050,9 @@ void RawAnalyzer::beginJob() {
   cout << "* in that data.  To do that, you will need to pay attention to 2 documents, both of which might be evolving.     *" << endl;
   cout << "* Tullio's HTR documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/HTR/design/HTR_MainFPGA.pdf *" << endl;
   cout << "* Eric's DCC documentation:  http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/DCC/FormatGuide.pdf           *" << endl; 
-  printf("* Best of luck.   Version is %s%s%s",bold,CodeVersion,none);
-  cout << "                                                                        *" << endl;
-  cout << "* (Drew Baden, drew@umd.edu, Aug 2014)                                                                           *" << endl;
+   printf("* Best of luck.   This version is %s%12s%s                                       (Drew Baden, drew@umd.edu)  *\n",
+		bold,CodeVersion,none);
+  cout << "* (Give someone a fish, they eat for a day.  Teach them to fish, they eat for a lifetime!)                       *" << endl;
   cout << "******************************************************************************************************************" << endl;
 }
 
