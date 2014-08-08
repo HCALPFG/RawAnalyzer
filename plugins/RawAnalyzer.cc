@@ -1287,10 +1287,16 @@ void print_error_warnings() {
 
 void getFeds(int* nfeds, int* ifeds, bool printout, int irun, int iev) {
 	int kfeds = 0;
-	for (int i=700; i<732; i++) {
+	for (int i=700; i<800; i++) {
+//	for (int i=700; i<FEDNumbering::lastFEDId(); i++) {
 	  const FEDRawData& data = rawdata->FEDData(i);
+//	  FEDHeader header(data.data());
+//	  FEDTrailer trailer(data.data());
 	  size=data.size();
+//	    cout << "i=" << i << " size=" << size << " ok=" <<  rawdata.isValid() << endl;
 	  if (size > 0) {
+//		cout << " header check " << header.check() << " trailer check " << trailer.check() <<
+//		" trailer status " << trailer.evtStatus() << endl;
 //		cout << "Found FED " << i << endl;
 		FEDHeader header(data.data());
 		FEDTrailer trailer(data.data()+size-8);
@@ -1594,6 +1600,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
    int this_evn = e.id().event();
    isFEDopen = false;
    if (printbegin) cout << "---> Run: " << e.id().run() << " Event: " << e.id().event() << endl;
+
 //
 //   e.getByType(rawdata);   <=== this is old.  Seth Cooper changed it!  (7/2014)
 //
