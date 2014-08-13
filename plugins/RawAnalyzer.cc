@@ -20,6 +20,7 @@
 
 // system include files
 #include <memory>
+#include <string>
 
 // user include files
 #include "FWCore/Framework/interface/Frameworkfwd.h"
@@ -180,6 +181,9 @@ class RawAnalyzer : public edm::EDAnalyzer {
       virtual void analyze(const edm::Event&, const edm::EventSetup&);
       virtual void endJob() ;
       std::set<int> FEDids_;
+  
+      const bool writeToFile_;
+      const std::string filePath_;
 
       // ----------member data ---------------------------
 };
@@ -1575,9 +1579,13 @@ void check_htr_header_errors(int irun,int iev) {
 //
 // constructors and destructor
 //
-RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig) {
-   //now do what ever initialization is needed
-
+RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig):
+  writeToFile_ (iConfig.getUntrackedParameter<bool>       ("writeToFile", false)),
+  filePath_    (iConfig.getUntrackedParameter<std::string>("filePath"   , "file.txt")) 
+{
+  //now do what ever initialization is needed
+  if ( writeToFile_ ) std::cout << "I will write to this file: " << filePath_ << std::endl;
+  else                std::cout << "I will not write to a file" << std::endl;
 }
 
 
