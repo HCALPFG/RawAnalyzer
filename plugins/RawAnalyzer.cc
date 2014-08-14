@@ -61,7 +61,7 @@ using namespace std;
 #define gray  "\033[0;37m"
 #define none   "\033[0m"        // to flush the previous property
 
-const char* CodeVersion="13AUG2014-v0";
+const char* CodeVersion="14AUG2014-v0";
 bool write_output = false;
 string outfile_path;
 FILE* fout = NULL;
