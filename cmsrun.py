@@ -2,8 +2,9 @@ import FWCore.ParameterSet.Config as cms
 import FWCore.ParameterSet.VarParsing as VarParsing
 options = VarParsing.VarParsing()
 options.register(
-	'file','',VarParsing.VarParsing.multiplicity.singleton,VarParsing.VarParsing.varType.string,
-	'file path for storing output')
+	'file','',VarParsing.VarParsing.multiplicity.singleton,
+	VarParsing.VarParsing.varType.string,
+	'File path for storing output')
 options.parseArguments()
 file_path = options.file
 #print file_path
