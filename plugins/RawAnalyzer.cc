@@ -354,7 +354,7 @@ void htr_data_print_formatted(int spign) {
 	// next come the QIE data, time to figure out which flavor.  5=old, 6="new"
 	//
 	int nqiewords = 0;
-	_printf("QIE values:\n");
+	_printf("\nQIE values:\n");
 	if (formatVer == 5) {
 	  _printf("    Format version=5, no packing, also obsolete as of long ago (it is currently 2014 at least)\n");
 	}
@@ -842,9 +842,10 @@ void htr_data_print() {
 
 void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	if (header) {
-		_printf("                               ");
+		_printf("                              ");
+		_printf("                              ");
 		_printf("Samples               CHTFCLBCOLFREBO\n");
-		_printf(" Spigot    EvN    BcN   OrN HTR  fw   #TP");
+		_printf(" Spigot    EvN      BcN   OrN HTR  fw   #TP");
 		_printf("      Htype      TP  QIE Presamp DCCw  TMMKEKEKDWELEZW TTC DLL\n");
 	}
 	if (debugit) cout << "calling htr_fill_header" << endl;
@@ -858,25 +859,25 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	// print out the bits that tell about errors, but only if it's set
 	int nerror = 0;
 	int ierror[15];
-	if (ct == 0) _printf(" "); 	else {_printf("1");ierror[nerror++]=0;}
-	if (hm == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=1;}
-	if (tmb == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=2;}
-	if (odfe == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=3;}
-	if (odce == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=4;}
-	if (odle == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=5;}
-	if (be == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=6;}
-	if (ck == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=7;}
-	if (od == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=8;}
-	if (lw == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=9;}
-	if (le == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=10;}
-	if (rl == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=11;}
-	if (ee == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=12;}
-	if (bz == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=13;}
-	if (ow == 0) _printf(" ");	else {_printf("1");ierror[nerror++]=14;}
+	if (ct == 0) _printf("-"); 	else {_printf("1");ierror[nerror++]=0;}
+	if (hm == 0) _printf("-");	else {_printf("1");ierror[nerror++]=1;}
+	if (tmb == 0) _printf("-");	else {_printf("1");ierror[nerror++]=2;}
+	if (odfe == 0) _printf("-");	else {_printf("1");ierror[nerror++]=3;}
+	if (odce == 0) _printf("-");	else {_printf("1");ierror[nerror++]=4;}
+	if (odle == 0) _printf("-");	else {_printf("1");ierror[nerror++]=5;}
+	if (be == 0) _printf("-");	else {_printf("1");ierror[nerror++]=6;}
+	if (ck == 0) _printf("-");	else {_printf("1");ierror[nerror++]=7;}
+	if (od == 0) _printf("-");	else {_printf("1");ierror[nerror++]=8;}
+	if (lw == 0) _printf("-");	else {_printf("1");ierror[nerror++]=9;}
+	if (le == 0) _printf("-");	else {_printf("1");ierror[nerror++]=10;}
+	if (rl == 0) _printf("-");	else {_printf("1");ierror[nerror++]=11;}
+	if (ee == 0) _printf("-");	else {_printf("1");ierror[nerror++]=12;}
+	if (bz == 0) _printf("-");	else {_printf("1");ierror[nerror++]=13;}
+	if (ow == 0) _printf("-");	else {_printf("1");ierror[nerror++]=14;}
 	_printf("  %2d  %2d",ttcready,dll);
 	if (nerror > 0) {
-	  _printf(" Error bits: ");
-	  for (int i=0; i<nerror; i++) _printf("%d ",err_types[ierror[i]]);
+	  _printf(" There are %d errors, on bits: ",nerror);
+	  for (int i=0; i<nerror; i++) _printf("%s ",err_types[ierror[i]]);
 	}
 //	printf(" %d",isone);
 	if (evn2 == evn1) {
@@ -1641,7 +1642,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	//
 	//   e.getByType(rawdata);   <=== this is old.  Seth Cooper changed it!  (7/2014)
 	//
-	if (!e.getByLabel("source",rawdata)) {
+	if (!e.getByLabel("rawDataCollector",rawdata)) {
+//	if (!e.getByLabel("source",rawdata)) {
 		_printf("Hmm, getByLabel returns FALSE for run %d event %d\n",this_run,this_evn);
 		return;
 	}
@@ -1756,15 +1758,16 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	const FEDRawData& trigger_data = rawdata->FEDData(1);
 	const FEDRawData& slow_data = rawdata->FEDData(3);
 	const FEDRawData& qadctdc_data = rawdata->FEDData(8);
-	if ( trigger_data.size() > 0) _printf(" FED 1 (HCAL_Trigger) present, size=%d\n",trigger_data.size());
-	if ( slow_data.size() > 0) _printf(" FED 3 (HCAL_SlowData) present, size=%d\n",slow_data.size());
-	if ( qadctdc_data.size() > 0) _printf(" FED 8 (HCAL_QADCTDC) present, size=%d\n",qadctdc_data.size());
+	cout << "Checking if trigger, slow data, and QADCTDC FEDs are here: " << endl;
+	if ( trigger_data.size() > 0) _printf("  FED 1 (HCAL_Trigger) present, size=%d\n",trigger_data.size());
+	if ( slow_data.size() > 0) _printf("  FED 3 (HCAL_SlowData) present, size=%d\n",slow_data.size());
+	if ( qadctdc_data.size() > 0) _printf("  FED 8 (HCAL_QADCTDC) present, size=%d\n",qadctdc_data.size());
 	_printf("+++++++++++++++++++++++++++++++++++++++++\n");
 	if (nFEDs>0) {
-		_printf("FED HCAL_DCCnnn(#bytes): ");
+		_printf("FEDs that are here: [format is  DCCnnn(#bytes)]\n  ");
 		for (int i=0; i<nFEDs; i++) {
 			_printf("%d(%d) ",iFEDs[i],iFEDsize[i]);
-			if ( (i+1)%10 == 0) _printf("\n             ");
+			if ( (i+1)%10 == 0) _printf("\n  ");
 		}
 		_printf("\n");
 	}
@@ -1781,16 +1784,24 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		_printf("  NEXT       Next                                  \n");
 		_printf("  FED        Select FED and report header info     \n");
 		_printf("  EVENT      Find event number and stop            \n");
+		_printf("  ETAPHI     Loop over FEDs, find the one with specified eta/phi\n");
 		_printf("  DCCHEX     DCC hex dump (unformatted)            \n");
 		_printf("  SHEADERS   All HTR payload headers               \n");
 		_printf("  SPEEK      HTR payload dump (formatted or not)   \n");
 		_printf("  QIE        Dump QIE data                         \n");
 		_printf("  LOOP       Loop and search for specifics (to uncover anomolies, and there are many)\n");
 		_printf("  QUIT       try to quit (throws timeout exception)\n");
-		creturn = vparse_input("Main>",9,"QUIT","NEXT","FED","EVENT","DCCHEX","SHEADERS","SPEEK","QIE","LOOP");
+		creturn = vparse_input("Main>",10,
+			"QUIT","NEXT","FED","EVENT","DCCHEX",
+			"SHEADERS","SPEEK","QIE","LOOP","ETAPHI");
 		if (!strcmp(creturn,"UNKNOWN"))  _printf("Hmm, not a legal command.  Try again?\n\n");
 		else if (!strcmp(creturn,"QUIT")) throw cms::Exception("Timeout");
 		else if (!strcmp(creturn,"NEXT")) return;
+		else if (!strcmp(creturn,"ETAPHI")) {
+			int eta_t = getINT("Which eta number: ");
+			int phi_t = getINT("Which phi number: ");
+			cout << "OK, will scan to find FED that has eta= " << eta_t << " and phi= " << phi_t << endl;
+		}
 		else if (!strcmp(creturn,"FED")) {
 			//
 			// select which FED you want to see
