@@ -1,4 +1,4 @@
- // -*- C++ -*-
+// -*- C++ -*-
 //
 // Package:    RawAnalyzer
 // Class:      RawAnalyzer
@@ -34,6 +34,8 @@
 #include <DataFormats/FEDRawData/interface/FEDHeader.h>
 #include <DataFormats/FEDRawData/interface/FEDTrailer.h>
 #include <DataFormats/FEDRawData/interface/FEDNumbering.h>
+#include "FWCore/ServiceRegistry/interface/Service.h"
+#include "CommonTools/UtilAlgos/interface/TFileService.h"
 
 #include <iostream>
 #include <iomanip>
@@ -61,10 +63,11 @@ using namespace std;
 #define gray  "\033[0;37m"
 #define none   "\033[0m"        // to flush the previous property
 
-const char* CodeVersion="14AUG2014-v0";
+const char* CodeVersion="28JUL2015-v0";
 bool write_output = false;
 string outfile_path;
 FILE* fout = NULL;
+bool globalFirst = true;
 int nargs = 0;
 char *args[100]; //max of 10 arguments on the stack
 //
@@ -94,6 +97,11 @@ int spigots = 0;
 uint32_t* hdata;  //here is the 16-bit HTR payload data
 uint32_t n16;     //number of 16-bit words for this HTR payload
 uint32_t* tpgs;
+int nevlist;
+int ievlist[100];
+int modval;
+//TFile* fs;
+TH1F* hmodorn;
 //
 // nominal qie to fC....close enough I think
 int qie2fC[4][32]={
@@ -130,6 +138,8 @@ int criteria = 0;
 int fed1, fed2;
 bool not12_13 = true;
 Handle<FEDRawDataCollection> rawdata;
+std::vector<int> badlist;
+
 
 void payload_spigot_header_return(uint32_t s,
  	int* nwords,int* htrerr,int* lrberr,int* ee,int* ep,int* eb,int* ev,int* et);
@@ -158,7 +168,7 @@ int get_spigot_bcn(int ispigot);
 int get_spigot_evn(int ispigot);
 int get_spigot_orn(int ispigot);
 bool checkFedBcNIdle(int nfeds, int* ifeds, int* fedBcNIdle);
-void check_htr_header_errors(int irun,int iev);
+void check_htr_header_errors(int irun,int iev, int orn);
 char* vparse_input(const char* prompt, int num, ...);
 int getINT(const char* prompt);
 void moveup();
@@ -184,6 +194,7 @@ class RawAnalyzer : public edm::EDAnalyzer {
       virtual void analyze(const edm::Event&, const edm::EventSetup&);
       virtual void endJob() ;
       std::set<int> FEDids_;
+	  edm::Service<TFileService> fs;
 
       // ----------member data ---------------------------
  //     const bool writeToFile_;
@@ -211,6 +222,7 @@ void setup_spigots(bool printout) {
 			spigots++;
 		}
 	}
+	if (debugit) cout << "   setup_spigots has " << spigots << " spigots" << endl;
 	if (printout) {
 		_printf(" There are %d spigots\n",spigots);
 	    _printf(" What does E-P-B-V-T mean you ask?\n");
@@ -224,8 +236,11 @@ void setup_spigots(bool printout) {
 	}
 	ospigot[0] = 24;
 	for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
-	if (debugit) for (int i=0; i<spigots; i++) 
-	    	cout << dec << "Spigot " << i << " offset " << ospigot[i] << endl;
+	if (debugit) {
+		for (int i=0; i<spigots; i++) 
+	    	cout << dec << "  Spigot " << i << " offset " << ospigot[i] << endl;
+	}
+	if (debugit) cout << "  setup_spigots done" << endl;
 }
 
 void htr_data_from_payload(const uint32_t *payload, int spigot) {
@@ -233,12 +248,13 @@ void htr_data_from_payload(const uint32_t *payload, int spigot) {
 	// start with a particular spigot, then take 32-bit data from "payload"
 	// and create 16-bit "hdata" words that holds the data for that spigot
 	//
-	if (debugit) cout << "htr_data_from_payload: ";
+//	if (debugit) cout << "htr_data_from_payload: ";
 	int iptr = ospigot[spigot];
 	int nwords = wspigot[spigot];
 	n16 = 2*nwords;
 	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords;
 	hdata = new uint32_t [n16];
+	if (debugit) cout << "=====> htr_data_from_payload made new hdata" << endl;
 	for (int j=0; j<nwords; j++) {
 	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
 //		    _printf("%d %d 0x%x\n",j,2*j,hdata[2*j]);
@@ -251,6 +267,7 @@ void htr_data_from_payload(const uint32_t *payload, int spigot) {
 void htr_data_delete() {
 	//
 	// delete the data collected in htr_data_from_payload
+	if (debugit) cout << "=====> htr_data_delete - deleting hdata" << endl;
 	delete [] hdata;
 }
 
@@ -1310,7 +1327,7 @@ void print_error_warnings() {
 
 void getFeds(int* nfeds, int* ifeds, bool printout, int irun, int iev) {
 	int kfeds = 0;
-	for (int i=700; i<800; i++) {
+	for (int i=700; i<732; i++) {
 //	for (int i=700; i<FEDNumbering::lastFEDId(); i++) {
 //	  cout << "Rawdata: isValid = " << rawdata.isValid() << " failedToGet = " << rawdata.failedToGet() <<  endl;
 	  const FEDRawData& data = rawdata->FEDData(i);
@@ -1328,6 +1345,19 @@ void getFeds(int* nfeds, int* ifeds, bool printout, int irun, int iev) {
 		ifeds[kfeds++] = i;
 	  }
 	}
+	//
+	// check uTCA as well
+	//
+/*	for (int i=1118; i<1124; i=i+2) {
+	  const FEDRawData& data = rawdata->FEDData(i);
+	  size=data.size();
+	  if (size > 0) {
+		FEDHeader header(data.data());
+		FEDTrailer trailer(data.data()+size-8);
+		payload=(uint32_t*)(data.data());
+		ifeds[kfeds++] = i;
+	  }
+	}*/
 	*nfeds = kfeds;
 	if (kfeds > 0 && printout) {
 		_printf("Run %6d Event %6d Feds: ",irun,iev);
@@ -1554,7 +1584,7 @@ void check_event_numbers(int irun, int iev) {
 	return;
 }
 
-void check_htr_header_errors(int irun,int iev) {
+void check_htr_header_errors(int irun,int iev, int orn) {
 	int nfeds = 0;
 	int ifeds[50];  // ususally 32 max
 	getFeds(&nfeds, ifeds, false, irun, iev);
@@ -1562,12 +1592,14 @@ void check_htr_header_errors(int irun,int iev) {
 		_printf("NO FEDS FOR THIS EVENT!!!!!\n");
 	}
 	for (int i=0; i<nfeds; i++) {
+	  if (debugit) cout << "FED check_htr_header_errors FED " << ifeds[i] << endl;
 	  const FEDRawData& data = rawdata->FEDData(ifeds[i]);
 	  FEDHeader header(data.data());
 	  FEDTrailer trailer(data.data()+size-8);
 	  payload=(uint32_t*)(data.data());
 	  setup_spigots(false);
 	  for (int j=0; j<spigots; j++) {
+	  	if (debugit) cout << "SPIGOT check_htr_header_errors SPIGOT " << j << endl;
 		htr_data_from_payload(payload,j);
 		htr_fill_header();
 		int nerror = 0;
@@ -1588,10 +1620,11 @@ void check_htr_header_errors(int irun,int iev) {
 		if (bz == 1) ierror[nerror++]=13;
 		if (ow == 1) ierror[nerror++]=14;
 		if (nerror > 0) {
-		  _printf("Run %7d Event %5d FED %3d Spigot %2d Errors:",irun,iev,ifeds[i],j);
-		  for (int k=0; k<nerror; k++) _printf("%d ",err_types[ierror[k]]);
+		  _printf("Run %7d Event %5d Orn %8d FED %3d Spigot %2d Errors:",irun,iev,orn,ifeds[i],j);
+		  for (int k=0; k<nerror; k++) _printf("%s ",err_types[ierror[k]]);
 		  _printf("\n");
 		}
+		htr_data_delete();
 	  }
 	}
 	return;
@@ -1609,6 +1642,8 @@ void check_htr_header_errors(int irun,int iev) {
 //
 RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig) {
 
+	edm::Service<TFileService> fs;
+	hmodorn = fs->make<TH1F>("ORNmod103","ORNmod103",103,0,103);
 	outfile_path = iConfig.getUntrackedParameter<string>("outputFile");
 	int olen = outfile_path.length();
 	write_output = olen > 0;
@@ -1616,7 +1651,16 @@ RawAnalyzer::RawAnalyzer(const edm::ParameterSet& iConfig) {
 		fout = fopen(outfile_path.c_str(),"w");
 		cout << "Opening output file " << outfile_path << endl;
 	}
-
+	//
+	cout << "====> debug = ";
+	debugit = iConfig.getUntrackedParameter<bool>("debugit",false);
+	cout << debugit << endl;
+	int modval = iConfig.getUntrackedParameter<int>("modval");
+	cout << "====> modval = " << modval << endl;
+	badlist = iConfig.getParameter<std::vector<int> >("badevlist");
+	for (std::vector<int>::iterator ilist = badlist.begin(); ilist != badlist.end(); ++ilist) {
+		cout << "Event to check: " << *ilist << endl;
+	}
 }
 
 
@@ -1635,10 +1679,17 @@ RawAnalyzer::~RawAnalyzer() {
 // ------------ method called to for each event  ------------
 void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 
+//	if (globalFirst) {
+//		edm::Service<TFileService> fs;
+//		hmodorn = fs->make<TH1F>("ORNmod103",103,0,103);
+//		globalFirst = false;
+//	}
 	int this_run = e.id().run();
 	int this_evn = e.id().event();
+	int this_orn = e.orbitNumber();
+	int this_orn_mod = this_orn % 103; // prescale for FE resets
 	isFEDopen = false;
-	if (printbegin) _printf("---> Run: %d Event %d \n",this_run,this_evn);
+	if (printbegin) _printf("---> Run: %d Event %d Orbit %d\n",this_run,this_evn,this_orn);
 	//
 	//   e.getByType(rawdata);   <=== this is old.  Seth Cooper changed it!  (7/2014)
 	//
@@ -1680,7 +1731,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			//
 			// report any HTR that has any errors set in it's header.  This will produce a lot of output!
 			//
-			check_htr_header_errors(this_run,this_evn);
+			if (debugit) cout << "++++++++++++++++++++ checking run " << this_run << " event " << this_evn << endl;
+			check_htr_header_errors(this_run,this_evn,this_orn);
 			fflush(stdout);
 			ncountse++;
 			if (ncountse < nloopse) return;
@@ -1729,6 +1781,24 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			printbegin = true;
 			searching = false;
 		}
+		else if (criteria == 7) {
+			//
+			// use the list of events and type out orbit number and orN%103
+			//
+			fflush(stdout);
+			for (std::vector<int>::iterator ilist = badlist.begin(); ilist != badlist.end(); ++ilist) {
+				int nextev = *ilist;
+				if (this_evn == nextev) {
+					hmodorn->Fill(this_orn_mod);
+					cout << "Match for event " << this_evn << " OrN " << 
+					this_orn << "  mod103 " << this_orn_mod << endl;
+				}
+			}
+			ncountse++;
+			if (ncountse < nloopse) return;
+			printbegin = true;
+			searching = false;
+		}
 	}
 	//
 	//   Handle<FEDRawDataCollection> rawdata;
@@ -1755,6 +1825,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	//
 	// check for FED 1 (trigger), 3 (slow data), and 8 (QADCTDC)
 	//
+	/*
 	const FEDRawData& trigger_data = rawdata->FEDData(1);
 	const FEDRawData& slow_data = rawdata->FEDData(3);
 	const FEDRawData& qadctdc_data = rawdata->FEDData(8);
@@ -1762,6 +1833,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	if ( trigger_data.size() > 0) _printf("  FED 1 (HCAL_Trigger) present, size=%d\n",trigger_data.size());
 	if ( slow_data.size() > 0) _printf("  FED 3 (HCAL_SlowData) present, size=%d\n",slow_data.size());
 	if ( qadctdc_data.size() > 0) _printf("  FED 8 (HCAL_QADCTDC) present, size=%d\n",qadctdc_data.size());
+	*/
+//	uTCA FEDS 1118,1120,1122
 	_printf("+++++++++++++++++++++++++++++++++++++++++\n");
 	if (nFEDs>0) {
 		_printf("FEDs that are here: [format is  DCCnnn(#bytes)]\n  ");
@@ -1779,8 +1852,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	char* creturn;
 	int done = 0;
 	while (done == 0) {	      
-		_printf("=========== Run %d   Event %d ======================================================\n",
-	  		this_run,this_evn);
+		_printf("=========== Run %d   Event %d   OrN %d    Orn mod 103 %d ======================================================\n",
+	  		this_run,this_evn,this_orn,this_orn_mod);
 		_printf("  NEXT       Next                                  \n");
 		_printf("  FED        Select FED and report header info     \n");
 		_printf("  EVENT      Find event number and stop            \n");
@@ -2011,9 +2084,12 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			_printf("  QIECUT       Set a cut and stop when you find any QIE that is greater or equal\n");
 			_printf("  QIESTATS     Run through events and calculate QIE Mean and SD per CAPID (and printout)\n");
 			_printf("  FEDLIST      Run through events and printout list of FEDs\n");
+			_printf("  ORNMOD       Give list of event numbers and type out orbit numbers and orn_mod_103)\n");
 			_printf("  QUIT         Return to MAIN\n");
 			while (done2 == 0) {
-				char* creturn2 = vparse_input("LOOP>",7,"QUIT","HERR","EVNUM","BERR","QIECUT","QIESTATS","FEDLIST");
+				char* creturn2 = vparse_input("LOOP>",8,
+					"QUIT","HERR","EVNUM","BERR","QIECUT",
+					"QIESTATS","FEDLIST","ORNMOD");
 				if (!strcmp(creturn2,"UNKNOWN")) _printf("Hmm, not a legal command.  Try again?\n\n");
 				else if (!strcmp(creturn2,"QUIT")) done2 = 1;
 				else if (!strcmp(creturn2,"HERR")) {
@@ -2095,6 +2171,14 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 				}
 				else if (!strcmp(creturn2,"FEDLIST")) {
 					criteria = 6;
+					nloopse = getINT("How many events to loop over? :");
+					ncountse = 0;
+					printbegin = false;
+					searching = true;
+					return;
+				}
+				else if (!strcmp(creturn2,"ORNMOD")) {
+					criteria = 7;
 					nloopse = getINT("How many events to loop over? :");
 					ncountse = 0;
 					printbegin = false;
