@@ -15,8 +15,85 @@
 //         Created:  Fri Dec 11 21:26:21 CET 2009
 // $Id$
 //
-//
-
+    //
+    // the following documentation are very useful, perhaps even critical:
+    //
+    // VME HTR documentation:
+    // http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/HTR/design/HTR_MainFPGA.pdf
+    //
+    // VME DCC documentation (lots of places, here is what I use):
+    // http://cmsdoc.cern.ch/cms/HCAL/document/drew/DCC_FormatGuide_July_2014.pdf
+    //
+    // uHTR documentation:
+	// https://cms-docdb.cern.ch/cgi-bin/DocDB/ShowDocument?docid=12306 
+    //
+    // AMC13 documentation:
+    // http://ohm.bu.edu/~hazen/CMS/AMC13/UpdatedDAQPath_2015-06-17.pdf
+    //
+    // HCAL HTR documentation is all here:
+    // http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/HTR/HTR_index.html
+    //
+    // HCAL DCC (local cern copy) is all here:
+    // http://cmsdoc.cern.ch/cms/HCAL/document/CountingHouse/DCC/
+    //
+    //
+    // the code is organized in the following way:
+	//
+	// rawdata is a type Handle to the data:  
+	//		Handle<FEDRawDataCollection> rawdata;
+	// then we see if the rawdata is there by a call like this at the analyzer beginning
+	//		if (!e.getByLabel("rawDataCollector",rawdata)) {...}
+	// and check that the rawdata is valid.
+    //
+	// note that over time, getByLabel sometimes has to be changed depending on your CMSSW
+	// version, what's in your python script, etc.  There's probably a way to bullet proof this
+	// but it is beyond me at this point.  :(
+	//
+	// now that you have the handle to rawdata, you can call
+	//		getFeds(false,this_run,this_evn);
+	// to create the list of feds for ease of use.   Note that the arguments to getFeds are just 
+    // so it can print out a bunch of stuff.   what this function does
+    // is to loop over all possible HCAL FEDs and constructs an array of FEDs:
+	// for each FED:
+    //
+    // 		nFEDs = number of FEDs
+    // 		iFEDs[1-nFEDs] = FED id (e.g. 700-730, 1118, 1120, 1122)
+    // 		iFEDsize[1-nFEDs] = size of the FED
+	// 		isFEDdcc[1-nFEDs] = boolean, true for DCC, false for AMC13
+    //
+    // note you only have to this once per event so it's done at the beginning of the analyzer
+    //
+    // now you are ready to rock and roll.   all you have to do is to decide which FED
+    // you are using and set the stuct payload to point to it:
+    //
+    //		payload = (uint32_t*) rawdata->FEDData(iamFED).data();
+	//		size = rawdata->FEDData(iamFED).size();
+	//		FEDHeader header(rawdata->FEDData(iamFED).data());
+	//		FEDTrailer trailer(rawdata->FEDData(iamFED).data()+size-8);
+	// 		setup_spigots(printout,isDCC)
+    //
+    // in the above snippet, "iamFED" is the fed number, e.g. 705, from the iFEDs array if you like
+    // setup_spigots just calculates pointers within the payload for the spigots (or slots for uTCA)
+    // 
+    // now that you have the pointer to the payload set, it's time to dig out the data.  
+    //
+    // note however that the data is usually described as being in 16 bit words (well, it is for the
+    // VME HTRs but it isn't for the uTCA) so we make a new array of uint32_t called "hdata", and 
+    // fill it with the payload info for THAT SPIGOT, 16 bits at a time.  This is done in the 
+    // routines called
+    //
+    // htr_data_from_payload and uhtr_data_from_payload
+    // 
+    // note that every call to one of the above has to be matched with a call to
+    // htr_data_delete and uhtr_data_delete to get rid of hdata, which came into being via a malloc
+    // 
+    // now that you have everything into hdata, you can then dig it out according to the documentation.
+    // for instance, you could fill info from the head for each spigot via 
+    //
+    //		htr_fill_header();
+    //
+    // and then fill info about the qies, etc.   have fun!
+    //
 
 // system include files
 #include <memory>
@@ -70,6 +147,7 @@ FILE* fout = NULL;
 bool globalFirst = true;
 int nargs = 0;
 char *args[100]; //max of 10 arguments on the stack
+int this_run, this_evn, this_orn, this_bcn;
 //
 // HTR types, starting from 0:  HO,HBHE1+,HBHE2+,HBHE3+,HBHE4+,HBHE5+,HBHE6+,HBHE7+,
 //                              HF,HBHE1-,HBHE2-,HBHE3-,HBHE4-,HBHE5-,HBHE6-,HBHE7-
@@ -157,7 +235,7 @@ void qies_delete();
 void print_htr_qies(int spigot);
 void qies_unpack(int which);
 void qies_unpack_word(uint32_t data);
-void htr_data_print();
+void htr_data_print(int mfed, int mspig);
 void htr_data_print_formatted(int spign);
 void setup_spigots(bool printout, bool isDCC);
 void find_htr_header_errors();
@@ -184,11 +262,11 @@ void payload_amc13_header_return(uint32_t s1, uint32_t s2,
 		int* amcSize,int* boardID,int* AmcNo,int* BlkNo,
 		int* iC,int* iV,int* iP,int* iE,int* iS,int* iM,int* iL);
 void uhtr_data_from_payload(const uint32_t *payload,int spign);
-void uhtr_data_print_formatted(int spign);
-void uhtr_data_print();
+void uhtr_data_print(int mfed, int mspig);
 void uhtr_data_delete();
 void uhtr_fill_header();
 void print_uhtr_payload_headers(bool header, int spigot);
+bool non_zero_ho_tpg(int* ho_fed, int* ho_spigot);
 //
 // class decleration
 //
@@ -210,166 +288,6 @@ class RawAnalyzer : public edm::EDAnalyzer {
  //     const bool writeToFile_;
  //     const string filePath_;
 };
-
-void setup_spigots(bool printout, bool isDCC) {
-	//
-	// this has to be called as soon as you decide on which FED you want to look at
-	//
-	if (isDCC) {
-		//
-		// this takes the DCC (FED) payload and sets up pointers to the individual spigots
-		// note: there are 3 64-bit words in the header, plus 1 32-bit word for each of 15
-		// possible DCC spigots=inputs (we never use more than 14), plus an extra 3 32-bit 
-		// words that are identically 0 before the payload.  
-		//
-		// So the actual payloads begin at 32-bit offset 2*3 + 15 + 3 = 24.   And my 
-		// understanding is that it NEVER changes!!!!
-		//
-		int nwords,htrerr,lrberr,ee,ep,eb,ev,et;
-		spigots = 0;
-		if (printout) _printf("   Spigot  #Words  HTRerr  LRBerr  E-P-B-V-T \n");
-		for (int i=0; i<18; i++) {
-			uint32_t s = payload[i+6] & 0xFFFFFFFF;
-			payload_spigot_header_return(s,&nwords,&htrerr,&lrberr,&ee,&ep,&eb,&ev,&et);
-			if (nwords > 0) {
-				hspigot[spigots] = s;
-				wspigot[spigots] = nwords;
-				if (printout) _printf("   %4d    %5d    0x%2.2x    0x%2.2x   %d %d %d %d %d\n",
-					spigots,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
-				spigots++;
-			}
-		}
-		if (debugit) cout << "   setup_spigots has " << spigots << " spigots" << endl;
-		if (printout) {
-			_printf("  Found %d spigots (see above)\n",spigots);
-		    _printf("  Inquiring minds might want to know what 'E P B V T' means:\n");
-			_printf(
-			"  %sE%s = HTR input enabled in DCC         %sP%s = Data received from this HTR for this event\n",
-				bold,none,bold,none);
-			_printf(
-			"  %sB%s = BX and ORN from HTR matches DCC  %sV%s = HTR event number matches TTC event number\n",
-				bold,none,bold,none);
-			_printf("  %sT%s = LRB data was truncated on reading\n",bold,none);
-		}
-		//
-		// be very careful!   according to Eric Hazen's documentation, there are 6 32-bit words in the
-		// header, followed by 1 32-bit word per HTR.   
-		//
-		ospigot[0] = 24;
-		for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
-		if (debugit) {
-			for (int i=0; i<spigots; i++) 
-		    	cout << dec << "  Spigot " << i << " offset " << ospigot[i] << endl;
-		}
-		if (debugit) cout << "  setup_spigots done" << endl;
-	}
-	else {
-		//
-		// this takes the AMC13 (FED) payload and sets up pointers to the individual spigots
-		// note: there are only 12 spigots max for the AMC13 (as of August 2015)
-		//
-		int nAMC = (payload[3] >> 20) & 0xF;
-		int boardID,AmcNo,BlkNo,amcSize,iC,iV,iP,iE,iS,iM,iL;
-//		cout << " number of AMC cards (aka uHTR cards): " << nAMC << endl;
-		spigots = 0;
-		if (printout) {
-			_printf("   There are %d uHTR here:\n",nAMC);
-			_printf("   BoardId  AMC# Blk#  Size   C V P E S M L\n");
-		}
-		for (int i=0; i<nAMC; i++) {
-			uint32_t s1 = payload[2*i+4] & 0xFFFFFFFF;
-			uint32_t s2 = payload[2*i+5] & 0xFFFFFFFF;
-			payload_amc13_header_return(s1,s2,&amcSize,&boardID,&AmcNo,&BlkNo,&iC,&iV,&iP,&iE,
-					&iS,&iM,&iL);
-			if (amcSize > 0) {
-				//
-				// note these pointers will be in 32-bit land (sigh....)
-				wspigot[spigots] = 2*amcSize;
-				spigots++;
-				if (printout) printf("   %6d    %2d   %2d    %3d   %d %d %d %d %d %d %d\n",
-					boardID,AmcNo,BlkNo,amcSize,iC,iV,iP,iE,iS,iM,iL);
-			}
-		}
-		if (printout) {
-			_printf("   Found %d spigots (see above)\n",spigots);
-		    _printf("   Inquiring minds might want to know what 'C V P E S M L' means:\n");
-			_printf(
-			"    %sC%s = CRC is valid %sV%s = EvN and BcN match %sP%s = data present %sE%s enabled\n",
-					bold,none,bold,none,bold,none,bold,none);
-			_printf(
-			"    %sS%s = 1 for all but 1st block %sM%s 1 for all but last block %sL%s length error\n",
-					bold,none,bold,none,bold,none);
-		}
-		//
-		// now set up pointers to the uHTR data similar calculation as per above:  2 64-bit words
-		// in the AMC13 header (4 32-bit words, 12 64-bit words 1 per AMC payload (24 32-bit words), 
-		// that makes an offset of 28
-		//
-		ospigot[0] = 28;
-		for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
-		if (debugit) {
-			for (int i=0; i<spigots; i++) 
-		    	cout << dec << "  Spigot " << i << " offset " << ospigot[i] << endl;
-		}
-		if (debugit) cout << "  setup_spigots done" << endl;
-	}
-}
-
-void htr_data_from_payload(const uint32_t *payload, int spigot) {
-	//
-	// start with a particular spigot, then take 32-bit data from "payload"
-	// and create 16-bit "hdata" words that holds the data for that spigot
-	//
-//	if (debugit) cout << "htr_data_from_payload: ";
-	int iptr = ospigot[spigot];
-	int nwords = wspigot[spigot];
-	n16 = 2*nwords;
-	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords;
-	hdata = new uint32_t [n16];
-	if (debugit) cout << "=====> htr_data_from_payload made new hdata" << endl;
-	for (int j=0; j<nwords; j++) {
-	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
-//		    _printf("%d %d 0x%x\n",j,2*j,hdata[2*j]);
-	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
-//		    _printf("%d %d 0x%x\n",j,2*j+1,hdata[2*j+1]);
-	}
-	if (debugit) cout << " leaving htr_data_from_payload" << endl;
-}
-
-void uhtr_data_from_payload(const uint32_t *payload, int spigot) {
-	//
-	// start with a particular uHTR, then take 32-bit data from "payload"
-	// and create 16-bit "hdata" words that holds the data for that card
-	//
-	if (debugit) cout << "htr_data_from_payload: ";
-	int iptr = ospigot[spigot];
-	int nwords = wspigot[spigot];
-	n16 = 2*nwords;
-	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords << endl;
-	hdata = new uint32_t [n16];
-	if (debugit) cout << "=====> uhtr_data_from_payload made new hdata" << endl;
-	for (int j=0; j<nwords; j++) {
-	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
-	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
-		if (debugit) _printf("j=%3.3d payload[iptr+j]=0x%8.8X ",j,payload[iptr+j]);
-		if (debugit) _printf("  %d 0x%4.4X",2*j,hdata[2*j]);
-		if (debugit) _printf("  %d 0x%4.4X\n",2*j+1,hdata[2*j+1]);
-	}
-	if (debugit) cout << " leaving htr_data_from_payload" << endl;
-}
-
-void htr_data_delete() {
-	//
-	// delete the data collected in htr_data_from_payload
-	if (debugit) cout << "=====> htr_data_delete - deleting hdata" << endl;
-	delete [] hdata;
-}
-void uhtr_data_delete() {
-	//
-	// delete the data collected in htr_data_from_payload
-	if (debugit) cout << "=====> uhtr_data_delete - deleting hdata" << endl;
-	delete [] hdata;
-}
 
 void payload_spigot_header_return(uint32_t s,
  	int* nwords,int* htrerr,int* lrberr,int* ee,int* ep,int* eb,int* ev,int* et) {
@@ -457,12 +375,9 @@ void htr_fill_header() {
 //	if (htype > 15) cout << "  HTYPE is " << htype << " which is a surprise and probably an error!!!!" << endl;
 //	else cout << "  This payload appears to be from the " << ntptype[htype]	<< " subdetector...." << endl;
 	pipeline = hdata[7]&0xFF;
-	if ( (htype == 0) || (htype > 15) ) {
-	  tpsamps = 0;
-	}
-	else {
-	  tpsamps = ntps/ntptype[htype];
-	}
+	if (htype == 0) tpsamps = ntps;
+	else if (htype > 15) tpsamps = 0;
+	else tpsamps = ntps/ntptype[htype];
 	qiesamps = hdata[n16-4]>>11;
 	ndccw = hdata[n16-2];
 	nwc = hdata[n16-3];
@@ -491,7 +406,8 @@ void uhtr_fill_header() {
 	uhtrLen = dl1 + ((hdata[1]&0xF) << 16);
 	bcn = hdata[1]>>4 & 0xFFF;
 	evn1 = (hdata[2] & 0xFFFF);
-	evn = evn1 + (hdata[3]&0xF << 16);
+	evn2 = (hdata[3]&0xFF) << 16;
+	evn = evn1 + evn2;
 	npresamp = (hdata[4]>>12)&0xF;
 	uhtrSlot = (hdata[4]>>8)&0xF;
 	uhtrCrate = hdata[4]&0xFF;
@@ -507,6 +423,66 @@ void uhtr_fill_header() {
 		cout << "htype " << htype;
   		cout << "htr_fill_header done" << endl;
 	}
+}
+
+bool non_zero_ho_tpg(int* ho_fed, int* ho_spigot) {
+	//
+	// loop over the HO FEDs, all spigots, and return TRUE if there is any non-zero TPG
+	// this code was written in Aug 2015 to help Pooja
+	//
+	// as far as I can tell, the HO FEDS are 724-730, however some of them are HOX (hard to say which)
+	// and some of the spigots are CALIB
+	//
+	for (int ifed=724; ifed<731; ifed++) {
+	  	//
+	  	// HO FEDs are 724-730 inclusive.   Note that some of these FEDS have HOX channels,
+	  	// but I am ignoring that here.  But not entirely, I'm also ignoring 727 and 729 which
+	  	// are pure HOX and so have no TPGs
+	  	//
+		if (ifed != 727 && ifed != 729) {
+			//
+			// setup pointers and loop over spigots, but only the 1st 12 since if it has more
+			// than that it's going to be CALIB spigots
+			//
+	  		payload = (uint32_t*) rawdata->FEDData(ifed).data();
+			setup_spigots(false,true);
+ 			for (int j=0; j<12; j++) {
+				htr_data_from_payload(payload,j);
+				htr_fill_header();
+				if (tpsamps > 0) {
+					//
+					// this says there are TPs, but it doesn't say whether they are nonzero 
+					// or not.  For HO you have to check the lower 9 bits of each word
+					//
+					tpgs_from_htr();
+					int firstTP = 0;
+					bool foundit = false;
+					for (int i=0; i<ntps; i++) {
+						int ibits = tpgs[i] & 0x1FF;
+						if (ibits > 0) {
+							foundit = true;
+							firstTP = ibits;
+						}
+					}
+					if (foundit) {
+						_printf(" ----> Found non zero HO TPG run %d ev %d FED %d spigot %d   TP=0x%X\n",
+							this_run,this_evn,ifed,j,firstTP);
+//						htr_data_print(ifed,j);
+//						for (int i=0; i<ntps; i++) _printf("   %2d  0x%4.4X\n",i,tpgs[i]);
+						*ho_fed = ifed;
+						*ho_spigot = j;
+						tpgs_delete();
+						return true;
+					}
+					tpgs_delete();
+				}
+				htr_data_delete();
+			}
+		}
+	}
+	*ho_fed = -1;
+	*ho_spigot = -1;
+	return false;
 }
 void htr_data_print_formatted(int spign) {
 	//
@@ -737,15 +713,7 @@ void htr_data_print_formatted(int spign) {
 	_printf("   Trailer:       EVN[7:0]=0x%X (low byte is 0x%X, possibly overwritten by DCC)\n",(hdata[jpt+3]>>8)&0xFF,hdata[jpt+3]&0xFF);
 }
 
-void uhtr_data_print_formatted(int spign) {
-	//
-	// first the headers
-	//
-	uhtr_fill_header();
-	print_uhtr_payload_headers(true,spign);
-
-}
-void htr_data_print() {
+void htr_data_print(int mfed, int mspig) {
 	//
 	// printout in 16 bit words
 	//
@@ -754,6 +722,7 @@ void htr_data_print() {
 	//
 	// first 8 words are the header
 	//
+	_printf(" === FED %d   Spigot %d\n",mfed,mspig);
 	_printf("Header (Ver 3, 0x59 and onwards)\n");
 	_printf("Header 1: 0x%4.4X   {SR=%d,0000000,EVN[7:0]=0x%X}\n",hdata[0],sr,evn1);
 	_printf("Header 2: 0x%4.4X   {EVN[23:8}=%d, full EVN=%d}\n",hdata[1],hdata[1],evn);
@@ -1021,7 +990,7 @@ void htr_data_print() {
 	_printf("Trailer:       0x%4.4X  {EVN[7:0]=0x%X,low byte=0x%X}\n",hdata[jpt+3],(hdata[jpt+3]>>8)&0xFF,hdata[jpt+3]&0xFF);
 }
 
-void uhtr_data_print() {
+void uhtr_data_print(int mfed, int mspig) {
 	//
 	// printout in 16 bit words
 	//
@@ -1030,6 +999,7 @@ void uhtr_data_print() {
 	//
 	// first 9 words are the header
 	//
+	_printf(" === FED %d   uHTR %d\n",mfed,mspig);
 	_printf("Header (Ver 1 and onwards)\n");
 	uint32_t uxx = hdata[0]&0xFFFF;
 	_printf("Header 0: 0x%4.4X   {Data_Length[15:0]=0x%X=%d 64-bit words}\n",hdata[0],uxx,uxx);
@@ -1163,12 +1133,13 @@ void print_uhtr_payload_headers(bool header, int spigot) {
 	// header means print the header information (set to false if you want to print it once and then
 	// have a big table of spigot headers)
 	//
+	if (debugit) cout << "calling uhtr_fill_header" << endl;
 	if (header) {
 		_printf("                              \n                              \n");
-		_printf(" Crate Slot  EvN   BcN   OrN   Len  Presamp  PayFormat EvType FWFlavor FWVersion \n");
+		_printf(" Crate  Slot     EvN      BcN      OrN  Len Presamp  EvType FormatVer FWFlavor FWVersion \n");
 	}
-	if (debugit) cout << "calling uhtr_fill_header" << endl;
-
+ 	_printf("    %2d   %2d  %7d  %7d  %7d  %3d    %2d       %1d      %2d       %2d        0x%X\n",
+		uhtrCrate,uhtrSlot,evn,bcn,orn,uhtrLen,npresamp,evtype,formatVer,fwflavor,fwVersion);
 }
 
 void print_htr_payload_headers(bool header, int spigot, bool extra) {
@@ -1180,7 +1151,7 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	// once at the end)
 	//
 	if (header) {
-		_printf("                              \n                              \n");
+		_printf("                                                            ");
 		_printf("Samples               CHTFCLBCOLFREBO\n");
 		_printf(" Spigot    EvN      BcN   OrN HTR  fw   #TP");
 		_printf("      Htype      TP  QIE Presamp DCCw  TMMKEKEKDWELEZW TTC DLL\n");
@@ -1191,7 +1162,7 @@ void print_htr_payload_headers(bool header, int spigot, bool extra) {
 	// the following are all errors if == 1 except for the last one
 	//
 	if (debugit) cout << "**** nwc *** " << nwc << "  "  << hex << nwc << dec << endl;
-	_printf("   %2d    %4d   %5d  %4d %3d 0x%2.2X   %2d   0x%2.2x=%6s   %2d   %2d   %2d     %3d  ",
+	_printf("   %2d  %7d  %7d%6d %3d 0x%2.2X   %2d   0x%2.2x=%6s   %2d   %2d   %2d     %3d  ",
 	    spigot,evn,bcn,orn,htrn,fw,ntps,htype,htr_types[htype],tpsamps,qiesamps,npresamp,ndccw);
 	// print out the bits that tell about errors, but only if it's set
 	int nerror = 0;
@@ -1433,7 +1404,6 @@ void check_qie(int type, int irun, int iev) {
 	// type=0 just do statistics
 	// type=1 statistics AND apply mantissa and range cuts
 	//
-	getFeds(false, irun, iev);
 	if (nFEDs < 1) _printf("NO FEDS FOR THIS EVENT!!!!!\n");
 	for (int i=0; i<nFEDs; i++) {
 	  const FEDRawData& data = rawdata->FEDData(iFEDs[i]);
@@ -1517,43 +1487,49 @@ void print_htr_tpgs() {
 		int ntpsamp = 0;
 		for (int i=0; i<ntps; i++) {
 			int tword = tpgs[i];
-//			cout << "0x" << hex << tword << dec << endl;
+//			cout << " TP " << i << "value 0x" << hex << tword << dec << endl;
 			int high5 = (tword>>11)&0x1F;
 			if (high5 == 0) ntpsamp++; // should be the same number for all 3 TPs (each one is a different set of 8 muon bits)
 		}
 		_printf("  This is HO - TPs are very different, and not all that well used (caveat emptor holds)\n");
 		_printf("  I see %d TP words here and %d samples for each muon bit:\n",ntps,ntpsamp);
-		_printf("   =>Muon bits:222221111111111         \n");
-		_printf("    Sample SOI 432109876543210987654321\n");
-		for (int i=0; i<ntpsamp; i++) {
-			int t1 = tpgs[i];		// 1-8
-			int t2 = tpgs[i+4];		// 9-16
-			int t3 = tpgs[i+8];		// 17-24
-			int soi1 = (t1>>9)&0x1;  // should be the same for all 3 words
-			int soi2 = (t2>>9)&0x1;  // should be the same for all 3 words
-			int soi3 = (t3>>9)&0x1;  // should be the same for all 3 words
-			int t18 = t1&0xFF;
-			int t28 = t2&0xFF;
-			int t38 = t3&0xFF;
-			if ( (soi1 != soi2) || (soi1 != soi3) || (soi2 != soi3) ) {
-				printf("Problem!!! SOIs do not agree on TP %d\n",i);
+		if (ntps > 0) {
+			_printf("   =>Muon bits:222221111111111         \n");
+			_printf("    Sample SOI 432109876543210987654321\n");
+			for (int i=0; i<ntpsamp; i++) {
+				int t1 = tpgs[i];		// 1-8
+				int t2 = tpgs[i+4];		// 9-16
+				int t3 = tpgs[i+8];		// 17-24
+				int soi1 = (t1>>9)&0x1;  // should be the same for all 3 words
+				int soi2 = (t2>>9)&0x1;  // should be the same for all 3 words
+				int soi3 = (t3>>9)&0x1;  // should be the same for all 3 words
+				int t18 = t1&0xFF;
+				int t28 = t2&0xFF;
+				int t38 = t3&0xFF;
+//				t18 = 0xA5;  // testing.....
+//				t28 = 0x5A;
+//				t38 = 0xA5;
+				if ( (soi1 != soi2) || (soi1 != soi3) || (soi2 != soi3) ) {
+					printf("Problem!!! SOIs do not agree on TP %d\n",i);
+				}
+				_printf("       %d    %d  ",i,soi1);
+				string binbuf;
+				binbuf = int_to_binary_char(t38);
+//				binbuf[8] = '\0';
+//				cout << " *" << binbuf << endl;
+				_printf("%8s",binbuf.c_str());
+				binbuf = int_to_binary_char(t28);
+//				binbuf[8] = '\0';
+				_printf("%8s",binbuf.c_str());
+				binbuf = int_to_binary_char(t18);
+//				binbuf[8] = '\0';
+				_printf("%8s\n",binbuf.c_str());
+//				cout << "       " << i << "    " << soi1 << "  " << 
+//					(bitset<8>) t38 << (bitset<8>) t28 << (bitset<8>) t18 << endl;
 			}
-			_printf("       %d    %d  ",i,soi1);
-			string binbuf;
-			binbuf = int_to_binary_char(t38);
-			binbuf[8] = '\0';
-			_printf("%8s",binbuf.c_str());
-			binbuf = int_to_binary_char(t28);
-			binbuf[8] = '\0';
-			_printf("%8s",binbuf.c_str());
-			binbuf = int_to_binary_char(t18);
-			binbuf[8] = '\0';
-			_printf("%8s\n",binbuf.c_str());
-//			cout << "       " << i << "    " << soi1 << "  " << 
-//				(bitset<8>) t38 << (bitset<8>) t28 << (bitset<8>) t18 << endl;
+			_printf("   SOI is the 'sample of interest', 1 corresponds to BX of the L1A.\n");
+			_printf("   There are 24 HO channels per HTR and so 24 possible muon bits could be set, see above.\n");
 		}
-		_printf("   SOI is the 'sample of interest', 1 corresponds to BX of the L1A.\n");
-		_printf("   There are 24 HO channels per HTR and so 24 possible muon bits could be set, see above.\n");
 	}
 	else {
 		//
@@ -1611,11 +1587,12 @@ void print_htr_tpgs() {
 }
 
 inline string int_to_binary_char(int x) {
-	static char b[33];
-	b[32] = '\0';
-	for (int z=0; z<32; z++) {
-		b[31-z] = ((x>>z) & 0x1) ? '1' : '0';
+	static char b[8];
+//	b[9] = '\0';
+	for (int z=0; z<8; z++) {
+		b[7-z] = ((x>>z) & 0x1) ? '1' : '0';
 	}
+//	cout << "int to binary:  give me 0x" << hex << x << dec << " and I return " << b << endl;
 	return b;
 }
 void find_htr_header_errors() {
@@ -1643,60 +1620,6 @@ void print_error_warnings() {
 	_printf("   %sDLL%s  counts number of times DLL unlock since last reset (trust not)\n",bold,none);
 	_printf("   %sTTC%s  TTCready, should always be asserted\n",bold,none);
 }
-
-void getFeds(bool printout, int irun, int iev) {
-	nFEDs = 0;
-	for (int i=700; i<732; i++) {
-//	for (int i=700; i<FEDNumbering::lastFEDId(); i++) {
-//	  cout << "Rawdata: isValid = " << rawdata.isValid() << " failedToGet = " << rawdata.failedToGet() <<  endl;
-	  const FEDRawData& data = rawdata->FEDData(i);
-//	  FEDHeader header(data.data());
-//	  FEDTrailer trailer(data.data());
-	  size=data.size();
-//	    cout << "i=" << i << " size=" << size << " ok=" <<  rawdata.isValid() << endl;
-	  if (size > 0) {
-//		cout << " header check " << header.check() << " trailer check " << trailer.check() <<
-//		" trailer status " << trailer.evtStatus() << endl;
-//		cout << "Found FED " << i << endl;
-		FEDHeader header(data.data());
-		FEDTrailer trailer(data.data()+size-8);
-		payload=(uint32_t*)(data.data());
-		iFEDs[nFEDs] = i;
-		iFEDsize[nFEDs] = size;
-		isFEDdcc[nFEDs] = true;
-		nFEDs++;
-	  }
-	}
-	//
-	// check uTCA as well
-	//
-	for (int i=1118; i<1124; i=i+2) {
-		if (debugit) cout << "getFeds looking for uTCA HF Feds..." << endl;
-	  const FEDRawData& data = rawdata->FEDData(i);
-	  size=data.size();
-	  if (debugit) cout << "   fed " << i << " size " << size << endl;
-	  if (size > 0) {
-		FEDHeader header(data.data());
-		FEDTrailer trailer(data.data()+size-8);
-		payload=(uint32_t*)(data.data());
-		iFEDs[nFEDs] = i;
-		iFEDsize[nFEDs] = size;
-		isFEDdcc[nFEDs] = false;
-		nFEDs++;
-		if (debugit) cout << "   found fed " << i << endl;
-	  }
-	}
-	if (nFEDs > 0 && printout) {
-		_printf("Run %6d Event %6d Feds: ",irun,iev);
-		for (int i=0; i<nFEDs; i++) {
-			_printf(" %d",iFEDs[i]);
-		}
-		_printf("\n");
-	}
-	if (nFEDs == 0) {
-		_printf(" No feds for this event????  \n");
-	}
-}	
 
 bool checkFedBcN(int* fedBcN) {
 	//
@@ -1890,7 +1813,6 @@ int get_spigot_orn(int ispigot) {
 int fedOrN_previous = 0;
 int OrN_delta;
 void check_event_numbers(int irun, int iev) {
-	getFeds(false, irun, iev);
 	if (nFEDs < 1) _printf("NO FEDS FOR THIS EVENT!!!!!\n");
 	int fedBcN, fedEvN, fedOrN, fedBcnIdle;
 	//
@@ -1914,7 +1836,6 @@ void check_event_numbers(int irun, int iev) {
 }
 
 void check_htr_header_errors(int irun,int iev, int orn) {
-	getFeds(false, irun, iev);
 	if (nFEDs < 1) {
 		_printf("NO FEDS FOR THIS EVENT!!!!!\n");
 	}
@@ -1957,6 +1878,233 @@ void check_htr_header_errors(int irun,int iev, int orn) {
 	}
 	return;
 }
+void getFeds(bool printout, int irun, int iev) {
+	//
+	// FED numbering is here:  
+	//  https://cmssdt.cern.ch/SDT/doxygen/CMSSW_4_4_2/doc/html/dd/d51/FEDNumbering_8h_source.html
+	//
+	// however it does NOT contain the new HF uTCA FEDs, which are (as of Aug 2015) 1118, 1120, 1122
+	//
+	nFEDs = 0;
+	for (int i=FEDNumbering::MINHCALFEDID; i<FEDNumbering::MAXHCALFEDID; i++) {
+//
+//		const FEDRawData& data = rawdata->FEDData(i);
+//		size=data.size();
+//		FEDHeader header(data.data());
+//		FEDTrailer trailer(data.data());
+//		cout << " header check " << header.check() << " trailer check " << trailer.check() <<
+//		" trailer status " << trailer.evtStatus() << endl;
+//		payload=(uint32_t*)(data.data());
+//
+//		_printf("debug: payload for fed %d at 0x%8.8X\n",i,rawdata->FEDData(i).data());
+		size = rawdata->FEDData(i).size();
+		if (size > 0) {
+			if (debugit) cout << "getFeds: Found FED " << i << endl;
+			payload = (uint32_t*) rawdata->FEDData(i).data();
+			iFEDs[nFEDs] = i;
+			iFEDsize[nFEDs] = size;
+			isFEDdcc[nFEDs] = true;
+			nFEDs++;
+		}
+	}
+	//
+	// check uTCA as well
+	//
+	for (int i=FEDNumbering::MINHCALuTCAFEDID; i<FEDNumbering::MAXHCALuTCAFEDID; i++) {
+		if (debugit) cout << "getFeds looking for uTCA HF Feds..." << endl;
+//		_printf("debug: payload for fed %d at 0x%8.8X\n",i,rawdata->FEDData(i).data());
+		size = rawdata->FEDData(i).size();
+		if (size > 0) {
+			if (debugit) cout << "getFeds: Found FED " << i << endl;
+			payload = (uint32_t*) rawdata->FEDData(i).data();
+			iFEDs[nFEDs] = i;
+			iFEDsize[nFEDs] = size;
+			isFEDdcc[nFEDs] = false;
+			nFEDs++;
+		}
+	}
+	//
+	// all done.  printout?
+	//
+	if (printout) {
+		_printf("+++++++++++++++++++++++++++++++++++++++++");	
+		_printf("+++++++++++++++++++++++++++++++++++++++++\n");
+		if (nFEDs>0) {
+			_printf("Run %6d Event %6d Feds: \n",irun,iev);
+			_printf("FEDs that are here: [format is  DCCnnn(#bytes), bold=AMC13]\n  ");
+			for (int i=0; i<nFEDs; i++) {
+				if (isFEDdcc[i]) _printf("%4d(%d) ",iFEDs[i],iFEDsize[i]);
+				else _printf("%s%4d(%d)%s ",bold,iFEDs[i],iFEDsize[i],none);
+				if ( (i+1)%10 == 0) _printf("\n  ");
+			}
+			_printf("\n");
+		}
+		else {
+			_printf(" No feds found in rawdata for Run %d event %d????  \n",irun,iev);
+		}
+		_printf("+++++++++++++++++++++++++++++++++++++++++");
+		_printf("+++++++++++++++++++++++++++++++++++++++++\n");
+	}
+}
+
+void setup_spigots(bool printout, bool isDCC) {
+	//
+	// this has to be called as soon as you decide on which FED you want to look at
+	//
+	if (isDCC) {
+		//
+		// this takes the DCC (FED) payload and sets up pointers to the individual spigots
+		// note: there are 3 64-bit words in the header, plus 1 32-bit word for each of 15
+		// possible DCC spigots=inputs (we never use more than 14), plus an extra 3 32-bit 
+		// words that are identically 0 before the payload.  
+		//
+		// So the actual payloads begin at 32-bit offset 2*3 + 15 + 3 = 24.   And my 
+		// understanding is that it NEVER changes!!!!
+		//
+		int nwords,htrerr,lrberr,ee,ep,eb,ev,et;
+		spigots = 0;
+		if (printout) _printf("   Spigot  #Words  HTRerr  LRBerr  E-P-B-V-T \n");
+		for (int i=0; i<18; i++) {
+			uint32_t s = payload[i+6] & 0xFFFFFFFF;
+			payload_spigot_header_return(s,&nwords,&htrerr,&lrberr,&ee,&ep,&eb,&ev,&et);
+			if (nwords > 0) {
+				hspigot[spigots] = s;
+				wspigot[spigots] = nwords;
+				if (printout) _printf("   %4d    %5d    0x%2.2x    0x%2.2x   %d %d %d %d %d\n",
+					spigots,nwords,htrerr,lrberr,ee,ep,eb,ev,et);
+				spigots++;
+			}
+		}
+		if (debugit) cout << "   setup_spigots has " << spigots << " spigots" << endl;
+		if (printout) {
+		    _printf("  Inquiring minds might want to know what 'E P B V T' means:\n");
+			_printf(
+			"  %sE%s = HTR input enabled in DCC         %sP%s = Data received from this HTR for this event\n",
+				bold,none,bold,none);
+			_printf(
+			"  %sB%s = BX and ORN from HTR matches DCC  %sV%s = HTR event number matches TTC event number\n",
+				bold,none,bold,none);
+			_printf("  %sT%s = LRB data was truncated on reading\n",bold,none);
+		}
+		//
+		// be very careful!   according to Eric Hazen's documentation, there are 6 32-bit words in the
+		// header, followed by 1 32-bit word per HTR.   
+		//
+		ospigot[0] = 24;
+		for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
+		if (debugit) {
+			for (int i=0; i<spigots; i++) 
+		    	cout << dec << "  Spigot " << i << " offset " << ospigot[i] << endl;
+		}
+		if (debugit) cout << "  setup_spigots done" << endl;
+	}
+	else {
+		//
+		// this takes the AMC13 (FED) payload and sets up pointers to the individual spigots
+		// note: there are only 12 spigots max for the AMC13 (as of August 2015)
+		//
+		int nAMC = (payload[3] >> 20) & 0xF;
+		int boardID,AmcNo,BlkNo,amcSize,iC,iV,iP,iE,iS,iM,iL;
+//		cout << " number of AMC cards (aka uHTR cards): " << nAMC << endl;
+		spigots = 0;
+		if (printout) {
+			_printf("   There are %d uHTR here:\n",nAMC);
+			_printf("   BoardId  AMC# Blk#  Size   C V P E S M L\n");
+		}
+		for (int i=0; i<nAMC; i++) {
+			uint32_t s1 = payload[2*i+4] & 0xFFFFFFFF;
+			uint32_t s2 = payload[2*i+5] & 0xFFFFFFFF;
+			payload_amc13_header_return(s1,s2,&amcSize,&boardID,&AmcNo,&BlkNo,&iC,&iV,&iP,&iE,
+					&iS,&iM,&iL);
+			if (amcSize > 0) {
+				//
+				// note these pointers will be in 32-bit land (sigh....)
+				wspigot[spigots] = 2*amcSize;
+				spigots++;
+				if (printout) printf("   %6d    %2d   %2d    %3d   %d %d %d %d %d %d %d\n",
+					boardID,AmcNo,BlkNo,amcSize,iC,iV,iP,iE,iS,iM,iL);
+			}
+		}
+		if (printout) {
+		    _printf("   Inquiring minds might want to know what 'C V P E S M L' means:\n");
+			_printf(
+			"    %sC%s = CRC is valid %sV%s = EvN and BcN match %sP%s = data present %sE%s enabled\n",
+					bold,none,bold,none,bold,none,bold,none);
+			_printf(
+			"    %sS%s = 1 for all but 1st block %sM%s = 1 for all but last block %sL%s = length error\n",
+					bold,none,bold,none,bold,none);
+		}
+		//
+		// now set up pointers to the uHTR data similar calculation as per above:  2 64-bit words
+		// in the AMC13 header (4 32-bit words, 12 64-bit words 1 per AMC payload (24 32-bit words), 
+		// that makes an offset of 28
+		//
+		ospigot[0] = 28;
+		for (int i=1; i<spigots; i++) ospigot[i] = ospigot[i-1] + wspigot[i-1];
+		if (debugit) {
+			for (int i=0; i<spigots; i++) 
+		    	cout << dec << "  Spigot " << i << " offset " << ospigot[i] << endl;
+		}
+		if (debugit) cout << "  setup_spigots done" << endl;
+	}
+}
+
+void htr_data_from_payload(const uint32_t *payload, int spigot) {
+	//
+	// start with a particular spigot, then take 32-bit data from "payload"
+	// and create 16-bit "hdata" words that holds the data for that spigot
+	//
+//	if (debugit) cout << "htr_data_from_payload: ";
+	int iptr = ospigot[spigot];
+	int nwords = wspigot[spigot];
+	n16 = 2*nwords;
+	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords;
+	hdata = new uint32_t [n16];
+	if (debugit) cout << "=====> htr_data_from_payload made new hdata" << endl;
+	for (int j=0; j<nwords; j++) {
+	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
+//		    _printf("%d %d 0x%x\n",j,2*j,hdata[2*j]);
+	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
+//		    _printf("%d %d 0x%x\n",j,2*j+1,hdata[2*j+1]);
+	}
+	if (debugit) cout << " leaving htr_data_from_payload" << endl;
+}
+
+void uhtr_data_from_payload(const uint32_t *payload, int spigot) {
+	//
+	// start with a particular uHTR, then take 32-bit data from "payload"
+	// and create 16-bit "hdata" words that holds the data for that card
+	//
+	if (debugit) cout << "htr_data_from_payload: ";
+	int iptr = ospigot[spigot];
+	int nwords = wspigot[spigot];
+	n16 = 2*nwords;
+	if (debugit) cout << " ospigot " << iptr << " nwords " << nwords << endl;
+	hdata = new uint32_t [n16];
+	if (debugit) cout << "=====> uhtr_data_from_payload made new hdata" << endl;
+	for (int j=0; j<nwords; j++) {
+	    hdata[2*j] = payload[iptr+j] & 0xFFFF;
+	    hdata[2*j+1] = (payload[iptr+j] >> 16) & 0xFFFF;
+		if (debugit) _printf("j=%3.3d payload[iptr+j]=0x%8.8X ",j,payload[iptr+j]);
+		if (debugit) _printf("  %d 0x%4.4X",2*j,hdata[2*j]);
+		if (debugit) _printf("  %d 0x%4.4X\n",2*j+1,hdata[2*j+1]);
+	}
+	if (debugit) cout << " leaving htr_data_from_payload" << endl;
+}
+
+void htr_data_delete() {
+	//
+	// delete the data collected in htr_data_from_payload
+	if (debugit) cout << "=====> htr_data_delete - deleting hdata" << endl;
+	delete [] hdata;
+}
+void uhtr_data_delete() {
+	//
+	// delete the data collected in htr_data_from_payload
+	if (debugit) cout << "=====> uhtr_data_delete - deleting hdata" << endl;
+	delete [] hdata;
+}
+
 //
 // constants, enums and typedefs
 //
@@ -2007,28 +2155,43 @@ RawAnalyzer::~RawAnalyzer() {
 
 // ------------ method called to for each event  ------------
 void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
-
+	int iamFED = 1000; // if you use this it will surely bomb.  :)
+	int iamFEDsize = 0;
+//	int iamFEDi;
 //	if (globalFirst) {
 //		edm::Service<TFileService> fs;
 //		hmodorn = fs->make<TH1F>("ORNmod103",103,0,103);
 //		globalFirst = false;
 //	}
-	int this_run = e.id().run();
-	int this_evn = e.id().event();
-	int this_orn = e.orbitNumber();
+	this_run = e.id().run();
+	this_evn = e.id().event();
+	this_orn = e.orbitNumber();
+	this_bcn = e.bunchCrossing();
 	int this_orn_mod = this_orn % 103; // prescale for FE resets
 	isFEDopen = false;
-	if (printbegin) _printf("---> Run: %d Event %d Orbit %d\n",this_run,this_evn,this_orn);
+	if (printbegin) _printf("---> Run: %d Event %d Orbit %d BcN %d\n",this_run,this_evn,this_orn,this_bcn);
 	//
 	//   e.getByType(rawdata);   <=== this is old.  Seth Cooper changed it!  (7/2014)
 	//
-	if (!e.getByLabel("rawDataCollector",rawdata)) {
 //	if (!e.getByLabel("source",rawdata)) {
-		_printf("Hmm, getByLabel returns FALSE for run %d event %d\n",this_run,this_evn);
+	if (!e.getByLabel("rawDataCollector",rawdata)) {
+		cout << "!!!!!!!!!!!!!! getByLabel returns FALSE for run " << this_run << " event " 
+			<< this_evn << "  Bailing...." << endl;
 		return;
 	}
+//	if (printbegin) cout << "      Rawdata: isValid = " << rawdata.isValid() << " failedToGet = " 
+//			<< rawdata.failedToGet() <<  endl;
+	//
+	// ok all seems ok, collect the FEDs
+	//
+	getFeds(printbegin,this_run,this_evn);
+	//
 	if (searching) {
+//		cout << "criteria=" << criteria << "  count=" << ncountse << endl;
 		if (criteria == 0) {
+			//
+			// stop on a particular event
+			//
 			if (this_evn != find_evn) return;
 			searching = false;
 		}
@@ -2039,6 +2202,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			find_htr_header_errors();
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			fflush(stdout);
 			printbegin = true;
@@ -2051,6 +2215,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			check_event_numbers(this_run,this_evn);
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			fflush(stdout);
 			printbegin = true;
@@ -2064,6 +2229,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			check_htr_header_errors(this_run,this_evn,this_orn);
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			void print_error_warnings();
 			fflush(stdout);
@@ -2077,6 +2243,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			check_qie(1, this_run,this_evn);
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			fflush(stdout);
 //			qies_stats_print();
@@ -2090,6 +2257,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			check_qie(0, this_run,this_evn);
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			fflush(stdout);
 			qies_stats_print();
@@ -2100,9 +2268,9 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			//
 			// cycle through and printout list of FEDS so we can see if events are consistent
 			//
-			getFeds(true, this_run, this_evn);
 			fflush(stdout);
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			fflush(stdout);
 			printbegin = true;
@@ -2122,35 +2290,37 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 				}
 			}
 			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
 			if (ncountse < nloopse) return;
 			printbegin = true;
 			searching = false;
 		}
+		else if (criteria == 8) {
+			//
+			// loop over events and stop if there is a non-zero HO TPG present (you're welcome Pooja)
+			//
+			int ho_fed,ho_spigot;
+			fflush(stdout);
+			ncountse++;
+			if (ncountse%200 == 0) _printf(".");
+			if (non_zero_ho_tpg(&ho_fed,&ho_spigot)) {
+				fflush(stdout);
+				_printf("\n");
+				printbegin = true;
+				searching = false;
+				_printf(" After looking at %d events I see a non zero number of TPGs for FED %d spigot %d\n",
+					ncountse,ho_fed,ho_spigot);
+			}
+			else {
+				if (ncountse < nloopse) return;
+				printbegin = true;
+				searching = false;
+			}
+		}
 	}
 	//
-	//   Handle<FEDRawDataCollection> rawdata;
-	getFeds(false,this_run,this_evn);
-//	const Provenance& prov = e.getProvenance(rawdata.id());
-//	const string& procName = prov.processName();
-//	const string& modName = prov.moduleLabel();
-//	const string& className = prov.className();
-	_printf("EDM data FEDRawDataCollection: isValid=%d (shoud be 1)  failedToGet=%d (should be 0)\n",
-		(int) rawdata.isValid(),(int) rawdata.failedToGet());
-//	_printf("Produced by process = %s   Module label = %s  Class = %s\n",procName,modName,className);
-/*	for (int i = FEDNumbering::MINHCALFEDID; i<FEDNumbering::MAXHCALFEDID; i++) {
-		const FEDRawData& data = rawdata->FEDData(i);
-		size=data.size();
-//		cout << " header check " << header.check() << " trailer check " << trailer.check() <<
-//		" trailer status " << trailer.evtStatus() << endl;
-//		cout << "Found FED " << i << endl;
-		if (size>0 && (FEDids_.empty() || FEDids_.find(i)!=FEDids_.end())) {
-//	  cout << " Found FED# " << setw(4) << i << " " << setw(8) << size << " bytes " << endl;
-			iFEDsize[nFEDs] = size;
-			iFEDs[nFEDs++] = i;
-		}
-	}*/
 	//
-	// check for FED 1 (trigger), 3 (slow data), and 8 (QADCTDC)
+	// check for FED 1 (trigger), 3 (slow data), and 8 (QADCTDC) but I think only for testbeam data
 	//
 	/*
 	const FEDRawData& trigger_data = rawdata->FEDData(1);
@@ -2161,28 +2331,21 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 	if ( slow_data.size() > 0) _printf("  FED 3 (HCAL_SlowData) present, size=%d\n",slow_data.size());
 	if ( qadctdc_data.size() > 0) _printf("  FED 8 (HCAL_QADCTDC) present, size=%d\n",qadctdc_data.size());
 	*/
-//	uTCA FEDS 1118,1120,1122
-	_printf("+++++++++++++++++++++++++++++++++++++++++\n");
-	if (nFEDs>0) {
-		_printf("FEDs that are here: [format is  DCCnnn(#bytes)]\n  ");
-		for (int i=0; i<nFEDs; i++) {
-			_printf("%d(%d) ",iFEDs[i],iFEDsize[i]);
-			if ( (i+1)%10 == 0) _printf("\n  ");
-		}
-		_printf("\n");
-	}
-	else _printf("No FEDs found here.   Maybe this is not an HCAL file?\n");
-	_printf("+++++++++++++++++++++++++++++++++++++++++\n");
 	//
 	// this might be old fashioned but what the heck...
-	//	    
+	//
+//	printf("payload after stopping\n");   
+//	for (int i=FEDNumbering::MINHCALFEDID; i<FEDNumbering::MAXHCALFEDID; i++) {
+//		_printf("debug: payload for fed %d at 0x%8.8X\n",i,rawdata->FEDData(i).data());
+//	}
 	char* creturn;
 	int done = 0;
 	while (done == 0) {	      
-		_printf("=========== Run %d   Event %d   OrN %d    Orn mod 103 %d ======================================================\n",
-	  		this_run,this_evn,this_orn,this_orn_mod);
+		_printf("=========== Run %d   Event %d   OrN %d   BcN %d ======================================================\n",
+	  		this_run,this_evn,this_orn,this_bcn);
 		_printf("  NEXT       Next                                  \n");
 		_printf("  FED        Select FED and report header info     \n");
+		_printf("  HCALFEDS   Printout FEDs vs HCAL subdetector list\n");
 		_printf("  EVENT      Find event number and stop            \n");
 		_printf("  ETAPHI     Loop over FEDs, find the one with specified eta/phi\n");
 		_printf("  DCCHEX     DCC hex dump (unformatted)            \n");
@@ -2191,12 +2354,35 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 		_printf("  QIE        Dump QIE data                         \n");
 		_printf("  LOOP       Loop and search for specifics (to uncover anomolies, and there are many)\n");
 		_printf("  QUIT       try to quit (throws timeout exception)\n");
-		creturn = vparse_input("Main>",10,
+		creturn = vparse_input("Main>",11,
 			"QUIT","NEXT","FED","EVENT","DCCHEX",
-			"SHEADERS","SPEEK","QIE","LOOP","ETAPHI");
+			"SHEADERS","SPEEK","QIE","LOOP","ETAPHI",
+			"HCALFEDS");
 		if (!strcmp(creturn,"UNKNOWN"))  _printf("Hmm, not a legal command.  Try again?\n\n");
 		else if (!strcmp(creturn,"QUIT")) throw cms::Exception("Timeout");
 		else if (!strcmp(creturn,"NEXT")) return;
+		else if (!strcmp(creturn,"HCALFEDS")) {
+			//
+			// print out info about the FEDs that may or may not be present
+			//
+			if (nFEDs>0) {
+				_printf("Run %6d Event %6d Feds: \n",this_run,this_evn);
+				_printf("FEDs that are here: [format is  DCCnnn(#bytes), bold=AMC13]\n  ");
+				for (int i=0; i<nFEDs; i++) {
+					if (isFEDdcc[i]) _printf("%4d(%d) ",iFEDs[i],iFEDsize[i]);
+					else _printf("%s%4d(%d)%s ",bold,iFEDs[i],iFEDsize[i],none);
+					if ( (i+1)%10 == 0) _printf("\n  ");
+				}
+				_printf("\n");
+			}
+			else {
+				_printf(" No feds found in rawdata for Run %d event %d????  \n",this_run,this_evn);
+			}
+			_printf("\n");
+			_printf(" HCAL FED list (as I understand it, Aug 2015):\n");
+			_printf(" VME: 700-717 HB/HBHE/HE   718-723 HF  724-730 HO/HOX   726,728,730 CALIB   727,729 HOX\n");
+			_printf(" uTCA: 1118,1120,1122 HF\n");
+		}
 		else if (!strcmp(creturn,"ETAPHI")) {
 			int eta_t = getINT("Which eta number: ");
 			int phi_t = getINT("Which phi number: ");
@@ -2206,23 +2392,22 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			//
 			// select which FED you want to see
 			//
-			_printf("There are %d here: ",nFEDs);
-			for (int i=0; i<nFEDs; i++) _printf("%d ",iFEDs[i]);
-			_printf("\n");
 			whichFED = getINT("Select FED (0=all)> ");
-			isFEDopen = true;
+			isFEDopen = false;
 			if (whichFED == 0) _printf("Be careful, you still need to choose 1 FED for other menu items!!!!\n");
 			for (int ifed=0; ifed<nFEDs; ifed++) {
 				if (whichFED == 0 || whichFED == iFEDs[ifed]) {
 					currentFEDaDCC = isFEDdcc[ifed];
-//					cout << "TESTING  ifed=" << ifed << " which is fed " << iFEDs[ifed] << endl;
-					const FEDRawData& data = rawdata->FEDData(iFEDs[ifed]);
-					size=data.size();
-					FEDHeader header(data.data());
-					FEDTrailer trailer(data.data()+size-8);
+					iamFED = iFEDs[ifed];
+					if (debugit) cout << " ifed=" << ifed << " which is fed " << iamFED << endl;
+					payload = (uint32_t*) rawdata->FEDData(iamFED).data();
+					size = rawdata->FEDData(iamFED).size();
+					iamFEDsize = size;
+//					iamFEDi = ifed;
+					FEDHeader header(rawdata->FEDData(iamFED).data());
+					FEDTrailer trailer(rawdata->FEDData(iamFED).data()+size-8);
 					_printf(" L1Id: %8d  BXId %8d\n",header.lvl1ID(),header.bxID());
-					payload=(uint32_t*)(data.data());
-					if (isFEDdcc[ifed]) {
+					if (currentFEDaDCC) {
 						//
 						// DCC (VME) FEDS go from 700 to 731 (or near there)
 						//
@@ -2285,9 +2470,9 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 						int evn =  payload[1] & 0xFFFFFF; // 24 bits
 						int evtTy = (payload[1] >> 24) & 0xF;
 						int isfive = (payload[1] >> 28) & 0xF; // should be 5!
-						_printf("   %sFirst nibble%s=0x%X (8) ",bold,none,ifirst);
-						_printf("%sFOV%s=0x%X %sFED%s=%d %sBcN%s=%d (0x%X) %sEvN%s=%d %sEvty%s=%d (1=phys, 2=calib)",
-							bold,none,fov,bold,none,fedn,bold,none,bcn,bcn,bold,none,evn,bold,none,evtTy);
+						_printf("   Header 1 %sFirst nibble%s=0x%X (8) ",bold,none,ifirst);
+						_printf("%sFOV%s=0x%X %sFED%s=%d %sBcN%s=0x%X=%d %sEvN%s=0x%X=%d %sEvty%s=%d (1=phys, 2=calib)",
+							bold,none,fov,bold,none,fedn,bold,none,bcn,bcn,bold,none,evn,evn,bold,none,evtTy);
 						_printf(" %sLast nibble%s=0x%X (5)\n",bold,none,isfive);
 //						_printf(" Data = 0x%8.8X%8.8X means:\n",payload[3],payload[2]);
 						int if2 = payload[2] & 0xF;
@@ -2295,7 +2480,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 						int reserved = (payload[3] >> 4) & 0xFFFFF;
 						int nAMC = (payload[3] >> 20) & 0xF;
 						int uFOV = (payload[3] >> 28) & 0xF; // should be 1 as of Aug 2015
-						_printf("   %sFirst nibble%s=0x%X (0) ",bold,none,if2);
+						_printf("   Header 2 %sFirst nibble%s=0x%X (0) ",bold,none,if2);
 						_printf("%sOrN%s=%d %sreserved%s=0x%X %snAMC%s=%d %suFOV%s=%d\n",
 							bold,none,orn,bold,none,reserved,bold,none,nAMC,bold,none,uFOV);
 						//
@@ -2305,7 +2490,8 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 						//
 						// printout the whole thing
 						//
-/*						for (int i=0; i<1038; i++) _printf("%4.4i 0x%8.8X\n",i,payload[i]);
+/*	DEBUGGING BLOCK					
+						for (int i=0; i<1038; i++) _printf("%4.4i 0x%8.8X\n",i,payload[i]);
 						int ipt = 0;
 						for (int i=0; i<4; i++) {
 							_printf(" Header %d  0x%8.8X\n",i,payload[ipt]);
@@ -2328,10 +2514,11 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 							}
 						}
 						cout << "ipt=" << ipt << endl;
-						printf(" Trailer 1 0x%8.8X  Trailer 0 0x%8.8X\n",payload[ipt+1],payload[ipt]);*/
+						printf(" Trailer 1 0x%8.8X  Trailer 0 0x%8.8X\n",payload[ipt+1],payload[ipt]);
 						//
 						// print out trailer.   it's at 2*2 (header) + 12*2 (payload summaries) + 
 						// 42*2*12 (payload) = 1036 and 1037
+	DEBUGGING BLOCK */
 						int t1 = payload[1036];
 						int tbxid = t1&0xFFF;
 						int tLv1 = (t1>>12)&0xFF;
@@ -2342,6 +2529,7 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 					}
 				}
 			}
+			isFEDopen = true;
 		}
 		else if (!strcmp(creturn,"EVENT")) {
 			searching = true;
@@ -2353,60 +2541,117 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			//
 			// unformatted hex dump of the entire DCC payload (all spigots)
 			//
-			if (isFEDopen) {
-				int ndcc32 = size/4;   //size is in bytes
-				if (debugit) cout << "# DCC words is " << ndcc32 << endl;
-				for (int i=0; i<ndcc32; i++) {
-					if (i == 0) {
-						_printf("DCC Header:\n");
-					}
-					else if (i == 6) {
-						_printf("HTR payload summaries:\n");
-					}
-					for (int j=0; j<spigots; j++) 
-						if (i == ospigot[j]) _printf("HTR payload %d:\n",j+1);
-					_printf("  %4d 0x%8.8X\n",i,payload[i]);
-				}
-			}
-	    	else {
+			if (!isFEDopen) {
 				_printf("PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!\n");
-			}
+				break;
+	    	}
+	    	if (currentFEDaDCC) {
+	    		_printf(" DCC Hex dump for FED %d size %d bytes\n",iamFED,iamFEDsize);
+	    		//
+	    		// 1st 6 words of header
+	    		//
+	    		_printf(" HEADER 1st part:\n");
+		    	for (int i=0; i<6; i++) _printf("%5d 0x%8.8X\n",i,payload[i]);
+		    	//
+		    	// 2nd 16 words, 1 per spigot (15 max) plus another 0x0 to make it even
+		    	//
+	    		_printf(" HEADER with 1 16-bit word per spigot:\n");
+		    	for (int i=6; i<24; i++) _printf("%5d 0x%8.8X\n",i,payload[i]);
+		    	//
+		    	// type out spigots
+		    	//
+		    	_printf(" The %d spigots come next:\n",spigots);
+		    	for (int i=0; i<spigots; i++) {
+		    		_printf(" Spigot %d has %d words\n",i,wspigot[i]);
+		    		_printf("  Header:\n");
+		    		for (int j=ospigot[i]; j<ospigot[i]+4; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    		_printf("  Data:\n");
+		    		for (int j=ospigot[i]+4; j<ospigot[i]+wspigot[i]-6; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    		_printf("  Trailer etc:\n");
+		    		for (int j=ospigot[i]+wspigot[i]-6; j<ospigot[i]+wspigot[i]; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    	}
+	    	}
+	    	else {
+//	    		int ipt = 0;
+	    		_printf(" AMC13 Hex dump for FED %d size %d bytes\n",iamFED,iamFEDsize);
+	    		//
+	    		// 1st 4 words of header
+	    		//
+	    		_printf(" HEADER 1st part:\n");
+		    	for (int i=0; i<4; i++) _printf("%5d 0x%8.8X\n",i,payload[i]);
+		    	//
+		    	// 2nd 24 words, 2 per uHTR
+		    	//
+	    		_printf(" HEADER with 2 16-bit words per spigot:\n");
+		    	for (int i=4; i<28; i++) _printf("%5d 0x%8.8X\n",i,payload[i]);
+		    	//
+		    	// type out spigots
+		    	//
+		    	_printf(" The %d spigots come next:\n",spigots);
+		    	for (int i=0; i<spigots; i++) {
+		    		_printf(" Spigot %d has %d words\n",i,wspigot[i]);
+		    		_printf("  Header:\n");
+		    		for (int j=ospigot[i]; j<ospigot[i]+4; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    		_printf("  Data:\n");
+		    		for (int j=ospigot[i]+4; j<ospigot[i]+wspigot[i]-2; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    		_printf("  Trailer etc:\n");
+		    		for (int j=ospigot[i]+wspigot[i]-2; j<ospigot[i]+wspigot[i]; j++) 
+		    			_printf("  %5d 0x%8.8X\n",j,payload[j]);
+		    	}
+	    	}
 		}
 		else if (!strcmp(creturn,"SHEADERS")) {
 			//
 			// formatted dump of the headers for all HTRs (spigots)
 			//
 			int kfed = getINT("This FED (1) or all FEDs (0) :");
-			if (kfed == 0 || (kfed > 0 && isFEDopen)) {
-				if (kfed == 0) {
-					for (int ifed=0; ifed<nFEDs; ifed++) {
-	  					bool isDCC = iFEDs[ifed] < 1000;
-						const FEDRawData& data = rawdata->FEDData(iFEDs[ifed]);
-						size=data.size();
-						FEDHeader header(data.data());
-						FEDTrailer trailer(data.data()+size-8);
-						_printf("====================================================================\n");
-						_printf("FED %d  L1Id: %8d  BXId: %8d\n",iFEDs[ifed],header.lvl1ID(),header.bxID());
-						payload=(uint32_t*)(data.data());
-						setup_spigots(true, isDCC);
-						for (int j=0; j<spigots; j++) {
+			if (kfed == 0) {
+				for (int ifed=0; ifed<nFEDs; ifed++) {
+	  				bool isDCC = isFEDdcc[ifed];
+	  				int iamFED = iFEDs[ifed];
+	  				payload = (uint32_t*) rawdata->FEDData(iamFED).data();
+					setup_spigots(false,isDCC);
+ 					_printf(" ==========================> FED %d\n",iFEDs[ifed]);
+					for (int j=0; j<spigots; j++) {
+						if(isDCC) {
 							htr_data_from_payload(payload,j);
+							htr_fill_header();
 							if (j == 0) print_htr_payload_headers(true,j,false);
 							else print_htr_payload_headers(false,j,false);
 							htr_data_delete();
 						}
+						else {
+							uhtr_data_from_payload(payload,j);
+							uhtr_fill_header();
+							if (j == 0) print_uhtr_payload_headers(true,j);
+							else print_uhtr_payload_headers(false,j);
+							uhtr_data_delete();
+						}
 					}
+					_printf(" Done <==========================\n\n",iFEDs[ifed]);
 				}
-				else {
-					//
-					// just do the FED that has been opened
-					//
-					_printf("Printout for %d spigots of FED %d\n",spigots,whichFED);
+			}
+			else {
+				if (!isFEDopen) {
+					_printf("PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!\n");
+					break;
+				}
+				//
+				// just do the FED that has been opened
+				//
+				_printf("Printout for %d spigots of FED %d\n",spigots,whichFED);
+				if (currentFEDaDCC) {
 					for (int i=0; i<spigots; i++) {
 						//
 						// extract the header for this spigot
 						//
 						htr_data_from_payload(payload,i);
+						htr_fill_header();
 						//
 						// print it out
 						//
@@ -2419,40 +2664,65 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 						htr_data_delete();
 					}
 				}
-				//
-				// just to be helpful, printout info about what all those things mean
-				//
-				print_error_warnings();
+				else {
+					for (int i=0; i<spigots; i++) {
+						//
+						// extract the header for this spigot
+						//
+						uhtr_data_from_payload(payload,i);
+						uhtr_fill_header();
+						//
+						// print it out 
+						//
+						if (debugit) cout << "ok, printout for spigot " << i << endl;
+						if (i == 0) print_uhtr_payload_headers(true,i);
+						else print_uhtr_payload_headers(false,i);
+						//
+						// now delete the spigot
+						//
+						uhtr_data_delete();
+					}
+				}
 			}
-			else {
-				_printf("PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!\n");
-	    	}
+			//
+			// just to be helpful, printout info about what all those things mean
+			//
+//				if (isDCC) print_error_warnings();
 		}
 		else if (!strcmp(creturn,"SPEEK")) {
 			//
 			// dump payload for this spigot, but prompt for whether formatted or not, and which one first
 			//
-			if (isFEDopen) {
-				_printf("There are %d spigots here (starting at 0). \n",spigots);
-				int spign = getINT("Which spigot do you want? ");
-				int doform = getINT("enter 1=formatted (easier to see), 0=unformatted (a bit more detailed): ");
+			if (!isFEDopen) {
+				_printf("PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!\n");
+				break;
+			}
+			_printf("There are %d spigots here (starting at 0). \n",spigots);
+			int spign = getINT("Which spigot do you want? (-1 means all of them): ");
+			int doform = getINT("enter 1=formatted (easier to see), 0=unformatted (a bit more detailed): ");
+			if (spign < 0) {
+				for (int i=0; i<spigots; i++) {
+					if (currentFEDaDCC){
+						htr_data_from_payload(payload,i);
+						if (doform == 1) htr_data_print_formatted(i); // as unformatted as possible
+						else htr_data_print(iamFED,i); // formatted
+						htr_data_delete();
+					}
+					else {
+						uhtr_data_from_payload(payload,i);
+						uhtr_data_print(iamFED,i);
+						uhtr_data_delete();
+					}
+				}
+			}
+			else {
 				if (currentFEDaDCC) {
 					//
 					// extract the data for this spigot
 					//
 					htr_data_from_payload(payload,spign);
-					if (doform == 1) {
-						//
-						// printout in unformatted (or close to it anyway)
-						//
-						htr_data_print_formatted(spign);
-					}
-					else {
-						//
-						// printout in unformatted (or close to it anyway)
-						//
-						htr_data_print();
-					}
+					if (doform == 1) htr_data_print_formatted(spign); // as unformatted as possible
+					else htr_data_print(iamFED,spign); // formatted
 					//
 					// and delete the entire payload for this HTR
 					//
@@ -2463,27 +2733,10 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 					// extract the data for this uTCA
 					//
 					uhtr_data_from_payload(payload,spign);
-					if (doform == 1) {
-						//
-						// printout in unformatted (or close to it anyway)
-						//
-//						uhtr_data_print_formatted(spign);
-					}
-					else {
-						//
-						// printout in unformatted (or close to it anyway)
-						//
-						uhtr_data_print();
-					}
-					//
-					// and delete the entire payload for this HTR
-					//
+					uhtr_data_print(iamFED,spign);
 					uhtr_data_delete();
 				}
 	    	}
-	    	else {
-				_printf("PLEASE OPEN A FED BEFORE DOING ANYTHING!!!!!\n");
-			}
 		}
 		else if (!strcmp(creturn,"QIE")) {
 			//
@@ -2513,11 +2766,12 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 			_printf("  QIESTATS     Run through events and calculate QIE Mean and SD per CAPID (and printout)\n");
 			_printf("  FEDLIST      Run through events and printout list of FEDs\n");
 			_printf("  ORNMOD       Give list of event numbers and type out orbit numbers and orn_mod_103)\n");
+			_printf("  HOTPG        Loop and stop on event that has non-zero TPG in HO\n");
 			_printf("  QUIT         Return to MAIN\n");
 			while (done2 == 0) {
-				char* creturn2 = vparse_input("LOOP>",8,
+				char* creturn2 = vparse_input("LOOP>",9,
 					"QUIT","HERR","EVNUM","BERR","QIECUT",
-					"QIESTATS","FEDLIST","ORNMOD");
+					"QIESTATS","FEDLIST","ORNMOD","HOTPG");
 				if (!strcmp(creturn2,"UNKNOWN")) _printf("Hmm, not a legal command.  Try again?\n\n");
 				else if (!strcmp(creturn2,"QUIT")) done2 = 1;
 				else if (!strcmp(creturn2,"HERR")) {
@@ -2607,6 +2861,14 @@ void RawAnalyzer::analyze(const edm::Event& e, const edm::EventSetup& iSetup) {
 				}
 				else if (!strcmp(creturn2,"ORNMOD")) {
 					criteria = 7;
+					nloopse = getINT("How many events to loop over? :");
+					ncountse = 0;
+					printbegin = false;
+					searching = true;
+					return;
+				}
+				else if (!strcmp(creturn2,"HOTPG")) {
+					criteria = 8;
 					nloopse = getINT("How many events to loop over? :");
 					ncountse = 0;
 					printbegin = false;
