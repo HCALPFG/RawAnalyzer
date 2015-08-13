@@ -19,6 +19,7 @@ process.maxEvents = cms.untracked.PSet( input = cms.untracked.int32(-1) ) # -1 m
 process.source = cms.Source("PoolSource",
     # replace 'myfile.root' with the source file you want to use
     fileNames = cms.untracked.vstring(
+#'root://eoscms//eos/cms/store/data/Run2015B/SingleMuon/RAW/v1/000/251/162/00000/0050EEC0-AD25-E511-9A32-02163E011962.root'
 #        'file:/afs/cern.ch/user/d/drew/USC_223708.root'
 #        'file:/afs/cern.ch/user/d/drew/USC_223495.root'  #HO pedestal
 #        '/store/group/comm_hcal/LS1/USC_223495.root'      #HO pedestal, local
@@ -44,7 +45,7 @@ process.analyzer = cms.EDAnalyzer('RawAnalyzer',
 	152261643,	150718977,	152737973,	153409717,	153800866,	151321313,	152910005,	153348277,
 	154002162,	149846529,	150489601,	150526465,	151370465,	152959157,	153262261,	153916146,
 	150202881,	152750261,  153004213),
-	modval = cms.untracked.int32(103)
+	modval = cms.untracked.int32(112)
 )
 process.TFileService = cms.Service("TFileService",fileName = cms.string("RawAnalyzer.root") )
 process.MessageLogger.cerr.FwkReport.reportEvery = 2000  #type out ever <n> events
